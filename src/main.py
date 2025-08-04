@@ -46,6 +46,24 @@ def setup_signal(instr, power_dbm):
     instr.write(":SOUR1:POW:STAT ON")
     instr.write(f":SOUR1:POW {power_dbm:.2f}")
 
+def read_pump_current(inst):
+    """Read current pump laser current setting"""
+    try:
+        current = float(inst.query("SENS3:CURR:DC:DATA?"))
+        return current * 1000  # Convert to mA
+    except Exception as e:
+        print(f"[ERROR] Failed to read pump current: {e}")
+        return 0.0
+
+def read_signal_power(instr):
+    """Read current signal laser power setting"""
+    try:
+        power = float(instr.query(":SOUR1:POW?"))
+        return power
+    except Exception as e:
+        print(f"[ERROR] Failed to read signal power: {e}")
+        return 0.0
+
 # Stage control
 def move_stage(ser, axis, pulses):
     cmd = f"{axis}{pulses:+d}\r\n".encode()
@@ -418,11 +436,23 @@ class OptimizerApp:
         root.title("Integrated Laser + DS102 Optimizer")
         root.geometry("1200x800")
         
-        # Variables
+        # Variables - keep old variables for compatibility but will be managed by new controls
         self.pump1_current = tk.DoubleVar(value=50)
         self.pump2_current = tk.DoubleVar(value=50)
         self.signal_power = tk.DoubleVar(value=0.0)
-        # Remove scan_mode variable as we now use separate buttons
+        
+        # New laser control variables
+        self.pump1_enabled = tk.BooleanVar(value=False)
+        self.pump2_enabled = tk.BooleanVar(value=False)
+        self.signal_enabled = tk.BooleanVar(value=False)
+        
+        self.pump1_entries = {}
+        self.pump2_entries = {}
+        self.signal_entries = {}
+        
+        self.current_pump1_value = 0.0
+        self.current_pump2_value = 0.0
+        self.current_signal_value = 0.0
         
         # Axis configuration
         self.axis_enabled = {}
@@ -452,18 +482,8 @@ class OptimizerApp:
         control_frame = tk.Frame(main_frame)
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         
-        # Laser controls
-        laser_frame = tk.LabelFrame(control_frame, text="Laser Controls", font=("Arial", 12, "bold"))
-        laser_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Label(laser_frame, text="Pump 1 Current (mA):").pack()
-        tk.Scale(laser_frame, variable=self.pump1_current, from_=0, to=80, orient='horizontal').pack(fill=tk.X)
-        
-        tk.Label(laser_frame, text="Pump 2 Current (mA):").pack()
-        tk.Scale(laser_frame, variable=self.pump2_current, from_=0, to=80, orient='horizontal').pack(fill=tk.X)
-        
-        tk.Label(laser_frame, text="Signal Laser Power (dBm):").pack()
-        tk.Scale(laser_frame, variable=self.signal_power, from_=-20, to=10, resolution=0.1, orient='horizontal').pack(fill=tk.X)
+        # Laser controls - new configurable sections
+        self.setup_laser_controls(control_frame)
         
         # Scan mode selection - Remove radio buttons, will use separate buttons instead
         
@@ -474,8 +494,10 @@ class OptimizerApp:
         button_frame = tk.Frame(control_frame)
         button_frame.pack(fill=tk.X, pady=10)
         
-        tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 5))
-        tk.Button(button_frame, text="Scan", command=self.run_brute_force_scan, bg="lightblue").pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(button_frame, text="Read Lasers", command=self.read_current_laser_values).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(button_frame, text="Debug Power", command=self.debug_power_reading, bg="orange").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(button_frame, text="Scan", command=self.run_brute_force_scan, bg="lightblue").pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(button_frame, text="ClimbHill", command=self.run_climb_hill, bg="lightgreen").pack(side=tk.LEFT)
         
         # Status
@@ -489,6 +511,106 @@ class OptimizerApp:
         self.fig, self.ax = plt.subplots(figsize=(8, 6))
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    
+    def setup_laser_controls(self, parent):
+        """Setup laser control UI sections"""
+        # Pump Laser 1 Configuration
+        pump1_frame = tk.LabelFrame(parent, text="Pump Laser 1", font=("Arial", 11, "bold"), bg="#ffe6e6")
+        pump1_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Headers
+        headers = ["Enable", "Current (mA)", "Start", "Stop", "Steps"]
+        for i, header in enumerate(headers):
+            tk.Label(pump1_frame, text=header, font=("Arial", 9, "bold"), bg="#ffe6e6").grid(row=0, column=i, padx=2, pady=2)
+        
+        # Pump 1 controls
+        tk.Checkbutton(pump1_frame, variable=self.pump1_enabled, bg="#ffe6e6").grid(row=1, column=0, padx=2, pady=2)
+        
+        # Current value (read-only)
+        current_entry1 = tk.Entry(pump1_frame, width=8, state="readonly", readonlybackground="#f0f0f0")
+        current_entry1.grid(row=1, column=1, padx=2, pady=2)
+        self.pump1_entries['current'] = current_entry1
+        
+        # Start, Stop, Steps
+        start_entry1 = tk.Entry(pump1_frame, width=8)
+        start_entry1.insert(0, "10")  # Default start
+        start_entry1.grid(row=1, column=2, padx=2, pady=2)
+        self.pump1_entries['start'] = start_entry1
+        
+        stop_entry1 = tk.Entry(pump1_frame, width=8)
+        stop_entry1.insert(0, "70")  # Default stop
+        stop_entry1.grid(row=1, column=3, padx=2, pady=2)
+        self.pump1_entries['stop'] = stop_entry1
+        
+        steps_entry1 = tk.Entry(pump1_frame, width=8)
+        steps_entry1.insert(0, "10")  # Default steps
+        steps_entry1.grid(row=1, column=4, padx=2, pady=2)
+        self.pump1_entries['steps'] = steps_entry1
+        
+        # Pump Laser 2 Configuration
+        pump2_frame = tk.LabelFrame(parent, text="Pump Laser 2", font=("Arial", 11, "bold"), bg="#e6ffe6")
+        pump2_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Headers
+        for i, header in enumerate(headers):
+            tk.Label(pump2_frame, text=header, font=("Arial", 9, "bold"), bg="#e6ffe6").grid(row=0, column=i, padx=2, pady=2)
+        
+        # Pump 2 controls
+        tk.Checkbutton(pump2_frame, variable=self.pump2_enabled, bg="#e6ffe6").grid(row=1, column=0, padx=2, pady=2)
+        
+        # Current value (read-only)
+        current_entry2 = tk.Entry(pump2_frame, width=8, state="readonly", readonlybackground="#f0f0f0")
+        current_entry2.grid(row=1, column=1, padx=2, pady=2)
+        self.pump2_entries['current'] = current_entry2
+        
+        # Start, Stop, Steps
+        start_entry2 = tk.Entry(pump2_frame, width=8)
+        start_entry2.insert(0, "10")  # Default start
+        start_entry2.grid(row=1, column=2, padx=2, pady=2)
+        self.pump2_entries['start'] = start_entry2
+        
+        stop_entry2 = tk.Entry(pump2_frame, width=8)
+        stop_entry2.insert(0, "70")  # Default stop
+        stop_entry2.grid(row=1, column=3, padx=2, pady=2)
+        self.pump2_entries['stop'] = stop_entry2
+        
+        steps_entry2 = tk.Entry(pump2_frame, width=8)
+        steps_entry2.insert(0, "10")  # Default steps
+        steps_entry2.grid(row=1, column=4, padx=2, pady=2)
+        self.pump2_entries['steps'] = steps_entry2
+        
+        # Signal Laser Configuration
+        signal_frame = tk.LabelFrame(parent, text="Signal Laser", font=("Arial", 11, "bold"), bg="#e6e6ff")
+        signal_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Headers (power in dBm)
+        signal_headers = ["Enable", "Power (dBm)", "Start", "Stop", "Steps"]
+        for i, header in enumerate(signal_headers):
+            tk.Label(signal_frame, text=header, font=("Arial", 9, "bold"), bg="#e6e6ff").grid(row=0, column=i, padx=2, pady=2)
+        
+        # Signal controls
+        tk.Checkbutton(signal_frame, variable=self.signal_enabled, bg="#e6e6ff").grid(row=1, column=0, padx=2, pady=2)
+        
+        # Current value (read-only)
+        current_entry_signal = tk.Entry(signal_frame, width=8, state="readonly", readonlybackground="#f0f0f0")
+        current_entry_signal.grid(row=1, column=1, padx=2, pady=2)
+        self.signal_entries['current'] = current_entry_signal
+        
+        # Start, Stop, Steps
+        start_entry_signal = tk.Entry(signal_frame, width=8)
+        start_entry_signal.insert(0, "-10")  # Default start
+        start_entry_signal.grid(row=1, column=2, padx=2, pady=2)
+        self.signal_entries['start'] = start_entry_signal
+        
+        stop_entry_signal = tk.Entry(signal_frame, width=8)
+        stop_entry_signal.insert(0, "5")  # Default stop
+        stop_entry_signal.grid(row=1, column=3, padx=2, pady=2)
+        self.signal_entries['stop'] = stop_entry_signal
+        
+        steps_entry_signal = tk.Entry(signal_frame, width=8)
+        steps_entry_signal.insert(0, "10")  # Default steps
+        steps_entry_signal.grid(row=1, column=4, padx=2, pady=2)
+        self.signal_entries['steps'] = steps_entry_signal
     
     def setup_axis_config(self, parent):
         """Setup DS102 axis configuration UI"""
@@ -561,6 +683,68 @@ class OptimizerApp:
         except Exception as e:
             self.status.config(text=f"Error reading positions: {e}")
             messagebox.showerror("Error", f"Failed to read DS102 positions: {e}")
+
+    def read_current_laser_values(self):
+        """Read current laser values and update GUI"""
+        try:
+            self.status.config(text="Reading laser values...")
+            self.root.update()
+            
+            rm = pyvisa.ResourceManager()
+            
+            # Read Pump 1
+            try:
+                p1 = rm.open_resource(PUMP1_ADDRESS)
+                current1 = read_pump_current(p1)
+                self.current_pump1_value = current1
+                
+                entry1 = self.pump1_entries['current']
+                entry1.config(state="normal")
+                entry1.delete(0, tk.END)
+                entry1.insert(0, f"{current1:.1f}")
+                entry1.config(state="readonly")
+                p1.close()
+            except Exception as e:
+                print(f"[ERROR] Failed to read Pump 1: {e}")
+                self.current_pump1_value = 0.0
+            
+            # Read Pump 2
+            try:
+                p2 = rm.open_resource(PUMP2_ADDRESS)
+                current2 = read_pump_current(p2)
+                self.current_pump2_value = current2
+                
+                entry2 = self.pump2_entries['current']
+                entry2.config(state="normal")
+                entry2.delete(0, tk.END)
+                entry2.insert(0, f"{current2:.1f}")
+                entry2.config(state="readonly")
+                p2.close()
+            except Exception as e:
+                print(f"[ERROR] Failed to read Pump 2: {e}")
+                self.current_pump2_value = 0.0
+            
+            # Read Signal Laser
+            try:
+                sgl = rm.open_resource(SIGNAL_ADDRESS)
+                power = read_signal_power(sgl)
+                self.current_signal_value = power
+                
+                entry_signal = self.signal_entries['current']
+                entry_signal.config(state="normal")
+                entry_signal.delete(0, tk.END)
+                entry_signal.insert(0, f"{power:.1f}")
+                entry_signal.config(state="readonly")
+                sgl.close()
+            except Exception as e:
+                print(f"[ERROR] Failed to read Signal Laser: {e}")
+                self.current_signal_value = 0.0
+            
+            self.status.config(text="Laser values read successfully.")
+            
+        except Exception as e:
+            self.status.config(text=f"Error reading laser values: {e}")
+            messagebox.showerror("Error", f"Failed to read laser values: {e}")
 
     def debug_power_reading(self):
         """Debug power meter readings and compare with web interface"""
