@@ -499,6 +499,84 @@ class OptimizerApp:
         
         return scan_params, enabled_axes
     
+    def run_brute_force_scan(self):
+        """Run brute force 3D scanning"""
+        try:
+            self.status.config(text="Initializing brute force scan...")
+            self.root.update()
+            
+            # Get scan parameters
+            scan_params, enabled_axes = self.get_scan_parameters()
+            if scan_params is None or not enabled_axes:
+                messagebox.showwarning("No Axes Selected", "Please enable at least one axis for scanning.")
+                return
+            
+            # Initialize instruments
+            rm = pyvisa.ResourceManager()
+            p1 = rm.open_resource(PUMP1_ADDRESS)
+            p2 = rm.open_resource(PUMP2_ADDRESS)
+            sgl = rm.open_resource(SIGNAL_ADDRESS)
+            pwr = rm.open_resource(POWER_METER_ADDRESS)
+            ser = serial.Serial(STAGE_PORT, baudrate=BAUDRATE, timeout=1)
+            ser.reset_input_buffer()
+            
+            # Setup lasers
+            setup_pump(p1, self.pump1_current.get() / 1000)
+            setup_pump(p2, self.pump2_current.get() / 1000)
+            setup_signal(sgl, self.signal_power.get())
+            
+            # Get origin positions
+            origin_positions = get_all_positions(ser)
+            
+            self.status.config(text=f"Scanning {len(enabled_axes)}D grid on axes: {', '.join(enabled_axes)}")
+            self.root.update()
+            
+            # Clear previous data
+            self.iterations, self.powers, self.colors, self.positions = [], [], [], []
+            
+            # Progress callback
+            def update_progress(current, total):
+                self.status.config(text=f"Scanning: {current}/{total} ({100*current/total:.1f}%)")
+                self.root.update()
+            
+            # Perform brute force scan
+            scan_data = brute_force_3d_scan(pwr, ser, scan_params, origin_positions, update_progress)
+            
+            # Process data for plotting
+            for i, point in enumerate(scan_data):
+                self.update_plot(i, point['power'], enabled_axes[0], point['position'])
+            
+            # Generate and save heatmaps
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir = os.path.join("log", f"scan_{timestamp}")
+            os.makedirs(log_dir, exist_ok=True)
+            
+            generate_heatmaps(scan_data, enabled_axes, timestamp, log_dir)
+            
+            # Save scan data
+            self.save_scan_results(scan_data, enabled_axes, timestamp, log_dir)
+            
+            # Display results
+            if scan_data:
+                best_point = max(scan_data, key=lambda x: x['power'])
+                best_power = best_point['power']
+                best_pos = best_point['position']
+                pos_str = ', '.join([f"{a}:{best_pos[a]}" for a in AXES])
+                self.status.config(text=f"Scan Complete! Max: {best_power:.2f} dBm @ {pos_str}")
+            else:
+                self.status.config(text="Scan completed - no data collected")
+            
+            # Cleanup
+            p1.write("OUTP:STAT OFF")
+            p2.write("OUTP:STAT OFF")
+            sgl.write(":SOUR1:POW:STAT OFF")
+            p1.close(); p2.close(); sgl.close(); pwr.close(); ser.close()
+            
+        except Exception as e:
+            self.status.config(text=f"[ERROR] {e}")
+            messagebox.showerror("Error", f"Brute force scan failed: {e}")
+            print(e)
+    
     def run_climb_hill(self):
         """Run hill climbing optimization (random walk + hill climb)"""
         try:
