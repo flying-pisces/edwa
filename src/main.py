@@ -18,6 +18,12 @@ from PIL import Image
 import requests
 import json
 import webbrowser
+import pyautogui
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Hardware setup
 PUMP1_ADDRESS = "USB0::0x1313::0x804F::M01093719::0::INSTR"
@@ -174,6 +180,80 @@ def read_power_web_interface():
             
     except Exception as e:
         print(f"[DEBUG] Cannot access web interface: {e}")
+        return None
+
+def capture_keysight_screenshot(log_dir, timestamp):
+    """Capture screenshot of Keysight web interface"""
+    try:
+        # Setup Chrome options for headless mode
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--window-size=1920,1080")
+        
+        # Initialize webdriver
+        driver = webdriver.Chrome(options=chrome_options)
+        
+        # Navigate to Keysight web interface
+        url = "http://100.65.16.193/pm/index.html?page=ch1"
+        driver.get(url)
+        
+        # Wait for page to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        # Give extra time for dynamic content
+        time.sleep(3)
+        
+        # Take screenshot
+        screenshot_path = os.path.join(log_dir, f"keysight_web_{timestamp}.png")
+        driver.save_screenshot(screenshot_path)
+        
+        driver.quit()
+        
+        print(f"[INFO] Keysight web interface screenshot saved: {screenshot_path}")
+        return screenshot_path
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to capture Keysight screenshot: {e}")
+        try:
+            # Fallback: try to capture with pyautogui if browser is open
+            screenshot = pyautogui.screenshot()
+            fallback_path = os.path.join(log_dir, f"keysight_fallback_{timestamp}.png")
+            screenshot.save(fallback_path)
+            print(f"[INFO] Fallback screenshot saved: {fallback_path}")
+            return fallback_path
+        except Exception as fallback_error:
+            print(f"[ERROR] Fallback screenshot also failed: {fallback_error}")
+            return None
+
+def capture_gui_screenshot(root_window, log_dir, timestamp):
+    """Capture screenshot of the main GUI"""
+    try:
+        # Update the GUI to ensure it's fully rendered
+        root_window.update_idletasks()
+        root_window.update()
+        
+        # Get window geometry
+        x = root_window.winfo_rootx()
+        y = root_window.winfo_rooty()
+        width = root_window.winfo_width()
+        height = root_window.winfo_height()
+        
+        # Capture the GUI window area
+        screenshot = pyautogui.screenshot(region=(x, y, width, height))
+        
+        # Save screenshot
+        gui_screenshot_path = os.path.join(log_dir, f"gui_screenshot_{timestamp}.png")
+        screenshot.save(gui_screenshot_path)
+        
+        print(f"[INFO] GUI screenshot saved: {gui_screenshot_path}")
+        return gui_screenshot_path
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to capture GUI screenshot: {e}")
         return None
 
 def compare_power_readings(inst, debug=True):
@@ -496,6 +576,7 @@ class OptimizerApp:
         
         tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(button_frame, text="Read Lasers", command=self.read_current_laser_values).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(button_frame, text="Screenshots", command=self.capture_screenshots, bg="yellow").pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(button_frame, text="Debug Power", command=self.debug_power_reading, bg="orange").pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(button_frame, text="Scan", command=self.run_brute_force_scan, bg="lightblue").pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(button_frame, text="ClimbHill", command=self.run_climb_hill, bg="lightgreen").pack(side=tk.LEFT)
@@ -745,6 +826,33 @@ class OptimizerApp:
         except Exception as e:
             self.status.config(text=f"Error reading laser values: {e}")
             messagebox.showerror("Error", f"Failed to read laser values: {e}")
+    
+    def capture_screenshots(self):
+        """Manually capture screenshots for testing"""
+        try:
+            self.status.config(text="Capturing screenshots...")
+            self.root.update()
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir = os.path.join("log", f"manual_screenshots_{timestamp}")
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # Capture Keysight web interface
+            keysight_path = capture_keysight_screenshot(log_dir, timestamp)
+            
+            # Capture GUI screenshot
+            gui_path = capture_gui_screenshot(self.root, log_dir, timestamp)
+            
+            if keysight_path and gui_path:
+                self.status.config(text=f"Screenshots saved to {log_dir}")
+                messagebox.showinfo("Screenshots", f"Screenshots saved to:\\n{log_dir}")
+            else:
+                self.status.config(text="Screenshot capture partially failed")
+                messagebox.showwarning("Screenshots", "Some screenshots failed to capture")
+            
+        except Exception as e:
+            self.status.config(text=f"Screenshot error: {e}")
+            messagebox.showerror("Screenshot Error", f"Failed to capture screenshots: {e}")
 
     def debug_power_reading(self):
         """Debug power meter readings and compare with web interface"""
@@ -883,6 +991,16 @@ class OptimizerApp:
             
             generate_heatmaps(scan_data, enabled_axes, timestamp, log_dir)
             
+            # Capture screenshots
+            self.status.config(text="Capturing screenshots...")
+            self.root.update()
+            
+            # Capture Keysight web interface
+            capture_keysight_screenshot(log_dir, timestamp)
+            
+            # Capture GUI screenshot
+            capture_gui_screenshot(self.root, log_dir, timestamp)
+            
             # Save scan data
             self.save_scan_results(scan_data, enabled_axes, timestamp, log_dir)
             
@@ -970,6 +1088,20 @@ class OptimizerApp:
             else:
                 self.status.config(text="Hill climb completed - no data collected")
 
+            # Capture screenshots for hill climb
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir = "log"
+            os.makedirs(log_dir, exist_ok=True)
+            
+            self.status.config(text="Capturing screenshots...")
+            self.root.update()
+            
+            # Capture Keysight web interface
+            capture_keysight_screenshot(log_dir, timestamp)
+            
+            # Capture GUI screenshot
+            capture_gui_screenshot(self.root, log_dir, timestamp)
+            
             self.save_results()
 
             # Cleanup
