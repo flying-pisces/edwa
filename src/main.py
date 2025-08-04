@@ -1,60 +1,76 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+# main.py
+
+import pyvisa
 import serial
 import time
-import numpy as np
 import os
-import datetime
-from PIL import Image, ImageTk
-import xmlrpc.client
+import csv
+import tkinter as tk
+from tkinter import ttk, messagebox
+from datetime import datetime
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.colors as mcolors
+from scipy.interpolate import griddata
+from PIL import Image
 
-DUT_SERIAL_PORT = 'COM3'
-CAMERA_SERIAL_PORT = 'COM5'
+# Hardware setup
+PUMP1_ADDRESS = "USB0::0x1313::0x804F::M01093719::0::INSTR"
+PUMP2_ADDRESS = "USB0::0x1313::0x804F::M00859480::0::INSTR"  # Adjust as needed
+SIGNAL_ADDRESS = "GPIB0::20::INSTR"
+POWER_METER_ADDRESS = "TCPIP0::100.65.16.193::inst0::INSTR"
+STAGE_PORT = "COM3"
 BAUDRATE = 38400
+AXES = ['X', 'Y', 'Z', 'U', 'V', 'W']
+AXIS_COLORS = {'X': 'red', 'Y': 'green', 'Z': 'blue', 'U': 'cyan', 'V': 'magenta', 'W': 'black'}
+SLEEP_TIME = 0.2
+INITIAL_STEP = 100
+MIN_STEP = 10
+INDEX_MATCHING = 40
 
-def get_rayci_proxy():
-    server_url = "http://localhost:8080/"
-    return xmlrpc.client.ServerProxy(server_url)
+# Pump laser setup
+def setup_pump(inst, current_amps):
+    inst.write("*RST")
+    inst.write("OUTP:STAT ON")
+    inst.write("SOUR:FUNC:MODE CURR")
+    inst.write("SOUR:CURR:LIM:AMPL 0.08")
+    inst.write(f"SOUR:CURR:LEV:IMM:AMPL {current_amps:.4f}")
 
-def capture_bmp(rayci, filename):
+# Signal laser setup
+def setup_signal(instr, power_dbm):
+    instr.write(":SOUR1:POW:STAT ON")
+    instr.write(f":SOUR1:POW {power_dbm:.2f}")
+
+# Stage control
+def move_stage(ser, axis, pulses):
+    cmd = f"{axis}{pulses:+d}\r\n".encode()
+    ser.write(cmd)
+    time.sleep(SLEEP_TIME)
+
+def get_axis_position(ser, axis):
+    """Read current position of an axis"""
     try:
-        result = rayci.RayCi.LiveMode.Measurement.newSingle()
-        rayci.RayCi.LiveMode.TwoD.View.exportView(0, filename)
-        print(f"Saved image to {filename}")
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        cmd = f'AXI{axis}:POS?\r'
+        ser.write(cmd.encode('ascii'))
+        time.sleep(0.1)
+        resp = ser.readline().decode('ascii').strip()
+        if resp:
+            return int(float(resp))
+        return 0
     except Exception as e:
-        print(f"RayCi image capture failed: {e}")
-
-def get_positions_for_axes(port, axes):
-    positions = {}
-    try:
-        ser = serial.Serial(port, baudrate=BAUDRATE, timeout=0.5)
-        for axis in axes:
-            try:
-                ser.reset_input_buffer()
-                ser.reset_output_buffer()
-                cmd = f'AXI{axis}:POS?\r'
-                ser.write(cmd.encode('ascii'))
-                time.sleep(0.1)
-                resp = ser.readline().decode('ascii').strip()
-                if resp:
-                    try:
-                        positions[axis] = str(int(float(resp)))
-                    except ValueError:
-                        positions[axis] = resp
-                else:
-                    positions[axis] = 'NA'
-            except Exception:
-                positions[axis] = 'NA'
-        ser.close()
-    except Exception:
-        for axis in axes:
-            positions[axis] = 'NA'
-    return positions
+        print(f"Error reading position for axis {axis}: {e}")
+        return 0
 
 def move_axis_to(ser, axis, pos):
+    """Move axis to absolute position"""
     try:
         cmd = f'AXI{axis}:GOABS {int(round(float(pos)))}\r'
         ser.write(cmd.encode('ascii'))
+        # Wait for motion to complete
         while True:
             ser.write(f'AXI{axis}:MOTION?\r'.encode('ascii'))
             resp = ser.readline().decode('ascii').strip()
@@ -64,196 +80,534 @@ def move_axis_to(ser, axis, pos):
     except Exception as e:
         print(f"Error moving axis {axis}: {e}")
 
-class DualStageScanGUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("DS102 Multi-Axis Scan & RayCi Image Capture")
-        self.geometry("1550x750")
-        self.dut_axes = ['X', 'Y', 'Z', 'U', 'V', 'W']
-        self.camera_axes = ['X', 'Y']
-        self.entries = {}
-        self.check_vars = {}
+def get_all_positions(ser):
+    """Get positions of all axes"""
+    positions = {}
+    for axis in AXES:
+        positions[axis] = get_axis_position(ser, axis)
+    return positions
 
-        self.dut_origin = get_positions_for_axes(DUT_SERIAL_PORT, self.dut_axes)
-        self.camera_origin = get_positions_for_axes(CAMERA_SERIAL_PORT, self.camera_axes)
+# Power meter - updated to use channel 1
+def read_power(inst):
+    try:
+        inst.write("READ1:POW?")
+        return INDEX_MATCHING + float(inst.read())
+    except Exception as e:
+        print(f"[ERROR] Power read failed: {e}")
+        return None
 
-        # --- DUT Umbrella Group (smaller) ---
-        self.dut_frame = tk.LabelFrame(self, text="DUT (COM3)", font=("Arial", 13, "bold"), bg="#ccc", bd=3, relief="groove")
-        self.dut_frame.place(x=20, y=20, width=480, height=240)
-
-        header = ["Axis", "Enable", "Origin", "Start (pulse)", "Stop (pulse)", "Step (count)"]
-        for i, label in enumerate(header):
-            tk.Label(self.dut_frame, text=label, font=('Arial', 10, 'bold'), bg="#ccc").grid(row=0, column=i, padx=5, pady=2)
-
-        self.entries['DUT'] = {}
-        self.check_vars['DUT'] = {}
-        for i, axis in enumerate(self.dut_axes):
-            tk.Label(self.dut_frame, text=axis, bg="#ccc").grid(row=i+1, column=0)
-            self.check_vars['DUT'][axis] = tk.BooleanVar(value=False)
-            cb = tk.Checkbutton(self.dut_frame, variable=self.check_vars['DUT'][axis], bg="#ccc")
-            cb.grid(row=i+1, column=1)
-            self.entries['DUT'][axis] = {}
-            val = self.dut_origin[axis]
-            ent = tk.Entry(self.dut_frame, width=9, fg="black", readonlybackground="#ccc")
-            ent.grid(row=i+1, column=2)
-            ent.insert(0, str(val))
-            ent.config(state="readonly")
-            self.entries['DUT'][axis]['origin'] = ent
-            for j, name in enumerate(['start', 'stop', 'step']):
-                ent2 = tk.Entry(self.dut_frame, width=9)
-                ent2.grid(row=i+1, column=3+j)
-                self.entries['DUT'][axis][name] = ent2
-
-        # --- Camera Umbrella Group (same layout as DUT) ---
-        self.camera_frame = tk.LabelFrame(self, text="Camera (COM5)", font=("Arial", 13, "bold"), bg="#bbb", bd=3, relief="groove")
-        self.camera_frame.place(x=20, y=280, width=480, height=120)
-
-        for i, label in enumerate(header):
-            tk.Label(self.camera_frame, text=label, font=('Arial', 10, 'bold'), bg="#bbb").grid(row=0, column=i, padx=5, pady=2)
-
-        self.entries['CAMERA'] = {}
-        self.check_vars['CAMERA'] = {}
-        for i, axis in enumerate(self.camera_axes):
-            tk.Label(self.camera_frame, text=axis, bg="#bbb").grid(row=i+1, column=0)
-            self.check_vars['CAMERA'][axis] = tk.BooleanVar(value=False)
-            cb = tk.Checkbutton(self.camera_frame, variable=self.check_vars['CAMERA'][axis], bg="#bbb")
-            cb.grid(row=i+1, column=1)
-            self.entries['CAMERA'][axis] = {}
-            val = self.camera_origin[axis]
-            ent = tk.Entry(self.camera_frame, width=9, fg="black", readonlybackground="#bbb")
-            ent.grid(row=i+1, column=2)
-            ent.insert(0, str(val))
-            ent.config(state="readonly")
-            self.entries['CAMERA'][axis]['origin'] = ent
-            for j, name in enumerate(['start', 'stop', 'step']):
-                ent2 = tk.Entry(self.camera_frame, width=9)
-                ent2.grid(row=i+1, column=3+j)
-                self.entries['CAMERA'][axis][name] = ent2
-
-        self.unitset_btn = tk.Button(self, text="Unit Set", command=self.open_unitset)
-        self.unitset_btn.place(x=60, y=550, width=120, height=36)
-        self.start_btn = tk.Button(self, text="Start Scan", command=self.start_scan)
-        self.start_btn.place(x=220, y=550, width=120, height=36)
-
-        self.progress_label = tk.Label(self, text="", font=('Arial', 12, 'bold'), fg="blue")
-        self.progress_label.place(x=370, y=550, width=370, height=36)
-
-        self.image_panel = tk.Label(self, text="Scan image preview here", width=632, height=504, bg="#EEE", anchor='center', relief="sunken")
-        self.image_panel.place(x=600, y=20, width=632, height=504)
-
-    def open_unitset(self):
-        messagebox.showinfo("Unit Set", "Unit Set dialog logic not yet implemented for dual-stage.")
-
-    def show_scan_image(self, image_path):
-        try:
-            im = Image.open(image_path)
-            photo = ImageTk.PhotoImage(im)
-            self.image_panel.configure(image=photo, text="")
-            self.image_panel.image = photo
-        except Exception as e:
-            self.image_panel.configure(text="(Image failed to load)")
-
-    def start_scan(self):
-        dut_enabled = any(self.check_vars['DUT'][ax].get() for ax in self.dut_axes)
-        cam_enabled = any(self.check_vars['CAMERA'][ax].get() for ax in self.camera_axes)
-        if dut_enabled and cam_enabled:
-            messagebox.showerror("Scan Error", "Please enable axes for ONLY ONE group (either DUT or Camera) at a time.")
-            return
-        if not dut_enabled and not cam_enabled:
-            messagebox.showwarning("No Axis Selected", "Please enable at least one axis in either group.")
-            return
-
-        if dut_enabled:
-            stage = 'DUT'
-            port = DUT_SERIAL_PORT
-            axes = self.dut_axes
-            origin = self.dut_origin
-            log_group = "DUT"
+# Optimization
+def random_walk(inst, ser, position, iterations, step_size):
+    history = []
+    for _ in range(iterations):
+        axis = np.random.choice(AXES)
+        direction = np.random.choice([-1, 1])
+        move_stage(ser, axis, direction * step_size)
+        power = read_power(inst)
+        if power is not None:
+            position[axis] += direction * step_size
+            history.append((axis, position.copy(), power))
         else:
-            stage = 'CAMERA'
-            port = CAMERA_SERIAL_PORT
-            axes = self.camera_axes
-            origin = self.camera_origin
-            log_group = "camera"
+            move_stage(ser, axis, -direction * step_size)
+    return history
 
-        scan_params = {}
-        for ax in axes:
-            if self.check_vars[stage][ax].get():
-                try:
-                    start = float(self.entries[stage][ax]['start'].get())
-                    stop = float(self.entries[stage][ax]['stop'].get())
-                    step = int(float(self.entries[stage][ax]['step'].get()))
-                    if step < 2:
-                        messagebox.showerror("Input Error", f"Step (count) for {ax} must be integer ≥2.")
-                        return
-                    scan_params[ax] = np.linspace(start, stop, step)
-                except Exception:
-                    messagebox.showerror("Input Error", f"Invalid range/step for {ax}")
-                    return
-            else:
-                origin_val = origin[ax]
-                if origin_val == 'NA':
-                    messagebox.showerror("Axis Error", f"Origin value not available for {ax}")
-                    return
-                scan_params[ax] = np.array([float(origin_val)])
-
-        if stage == 'DUT':
-            other_axes = self.camera_axes
-            other_origin = self.camera_origin
-            other_port = CAMERA_SERIAL_PORT
-        else:
-            other_axes = self.dut_axes
-            other_origin = self.dut_origin
-            other_port = DUT_SERIAL_PORT
-
-        other_positions = {ax: float(other_origin[ax]) if other_origin[ax] != 'NA' else 0.0 for ax in other_axes}
-
-        log_root = os.path.join(os.getcwd(), "log", log_group)
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        log_dir = os.path.join(log_root, timestamp)
-        os.makedirs(log_dir, exist_ok=True)
-
-        grids = [scan_params[ax] for ax in axes]
-        positions = np.array(np.meshgrid(*grids, indexing='ij')).reshape(len(axes), -1).T
-
-        try:
-            ser1 = serial.Serial(port, baudrate=BAUDRATE, timeout=0.5)
-            ser2 = serial.Serial(other_port, baudrate=BAUDRATE, timeout=0.5)
-            origin_pulses1 = {ax: float(origin[ax]) if origin[ax] != 'NA' else 0.0 for ax in axes}
-            origin_pulses2 = {ax: float(other_origin[ax]) if other_origin[ax] != 'NA' else 0.0 for ax in other_axes}
-            total = len(positions)
-
-            rayci = get_rayci_proxy()
-
-            for idx, pos in enumerate(positions):
-                for ax, val in zip(axes, pos):
-                    move_axis_to(ser1, ax, val)
-                for ax in other_axes:
-                    move_axis_to(ser2, ax, other_positions[ax])
-
-                pos_strs = [f"{ax.lower()}_{int(round(val))}" for ax, val in zip(axes, pos)]
-                filename = os.path.join(log_dir, '_'.join(pos_strs) + '.bmp')
-
-                # Now: Real RayCi image saved for preview and disk!
-                if rayci:
-                    capture_bmp(rayci, filename)
+def hill_climb(inst, ser, position, step_size):
+    improved = True
+    history = []
+    base_power = read_power(inst)
+    while improved and step_size >= MIN_STEP:
+        improved = False
+        for axis in AXES:
+            for direction in [1, -1]:
+                move_stage(ser, axis, direction * step_size)
+                power = read_power(inst)
+                if power is not None and power > base_power:
+                    position[axis] += direction * step_size
+                    history.append((axis, position.copy(), power))
+                    improved = True
+                    base_power = power
                 else:
-                    self.progress_label.config(text="RayCi not available; skipping image capture.")
+                    move_stage(ser, axis, -direction * step_size)
+        if not improved:
+            step_size = step_size // 2
+    return history
 
-                self.progress_label.config(text=f"Iteration {idx+1} of {total}")
-                self.show_scan_image(filename)
-                self.update()
+def systematic_scan(inst, ser, scan_params, origin_positions):
+    """Perform systematic scan based on selected axes and parameters"""
+    history = []
+    
+    # Create meshgrid for all enabled axes
+    axes = list(scan_params.keys())
+    grids = [scan_params[ax] for ax in axes]
+    positions = np.array(np.meshgrid(*grids, indexing='ij')).reshape(len(axes), -1).T
+    
+    total_positions = len(positions)
+    
+    for idx, pos in enumerate(positions):
+        # Move to scan position
+        current_pos = origin_positions.copy()
+        for ax, val in zip(axes, pos):
+            move_axis_to(ser, ax, val)
+            current_pos[ax] = val
+        
+        # Read power
+        power = read_power(inst)
+        if power is not None:
+            history.append((axes[0], current_pos, power))
+        
+        # Update progress (this would be called from GUI)
+        print(f"Scan progress: {idx+1}/{total_positions}")
+    
+    # Return to origin
+    for ax in axes:
+        move_axis_to(ser, ax, origin_positions[ax])
+    
+    return history
 
-            for ax in axes:
-                move_axis_to(ser1, ax, origin_pulses1[ax])
-            for ax in other_axes:
-                move_axis_to(ser2, ax, origin_pulses2[ax])
-            ser1.close()
-            ser2.close()
-            messagebox.showinfo("Scan Completed", "Scan complete and all axes returned to origin.")
+def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callback=None):
+    """Perform brute force 3D scanning for DS102"""
+    scan_data = []
+    axes = list(scan_params.keys())
+    
+    if not axes:
+        return scan_data
+    
+    # Create full 3D grid for enabled axes
+    grids = [scan_params[ax] for ax in axes]
+    
+    if len(axes) == 1:
+        # 1D scan
+        positions = [(pos,) for pos in grids[0]]
+    elif len(axes) == 2:
+        # 2D scan
+        X, Y = np.meshgrid(grids[0], grids[1], indexing='ij')
+        positions = [(x, y) for x, y in zip(X.ravel(), Y.ravel())]
+    elif len(axes) >= 3:
+        # 3D+ scan
+        meshgrids = np.meshgrid(*grids[:3], indexing='ij')
+        positions = list(zip(*[grid.ravel() for grid in meshgrids]))
+    
+    total_positions = len(positions)
+    
+    for idx, pos in enumerate(positions):
+        # Move to scan position
+        current_pos = origin_positions.copy()
+        for i, ax in enumerate(axes[:len(pos)]):
+            move_axis_to(ser, ax, pos[i])
+            current_pos[ax] = pos[i]
+        
+        # Read power
+        power = read_power(inst)
+        if power is not None:
+            # Store position and power data
+            scan_point = {
+                'position': current_pos.copy(),
+                'power': power,
+                'index': idx
+            }
+            scan_data.append(scan_point)
+        
+        # Progress callback
+        if progress_callback:
+            progress_callback(idx + 1, total_positions)
+    
+    # Return to origin
+    for ax in axes:
+        move_axis_to(ser, ax, origin_positions[ax])
+    
+    return scan_data
+
+def generate_heatmaps(scan_data, axes, timestamp, log_dir):
+    """Generate 1D/2D/3D heatmaps from scan data"""
+    if not scan_data or not axes:
+        return
+    
+    # Extract data
+    positions = np.array([[point['position'][ax] for ax in axes] for point in scan_data])
+    powers = np.array([point['power'] for point in scan_data])
+    
+    if len(axes) == 1:
+        # 1D plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(positions[:, 0], powers, 'b-o', markersize=4)
+        ax.set_xlabel(f'{axes[0]} Position')
+        ax.set_ylabel('Power (dBm)')
+        ax.set_title(f'1D Scan - {axes[0]} vs Power')
+        ax.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'heatmap_1D_{timestamp}.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(log_dir, f'heatmap_1D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+    elif len(axes) == 2:
+        # 2D heatmap
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Create regular grid for interpolation
+        x_unique = np.unique(positions[:, 0])
+        y_unique = np.unique(positions[:, 1])
+        X, Y = np.meshgrid(x_unique, y_unique)
+        
+        # Interpolate power values to grid
+        Z = griddata(positions[:, :2], powers, (X, Y), method='cubic', fill_value=np.nan)
+        
+        # Create heatmap
+        im = ax.imshow(Z, extent=[x_unique.min(), x_unique.max(), y_unique.min(), y_unique.max()],
+                      origin='lower', cmap='viridis', aspect='auto')
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Power (dBm)')
+        
+        # Labels and title
+        ax.set_xlabel(f'{axes[0]} Position')
+        ax.set_ylabel(f'{axes[1]} Position')
+        ax.set_title(f'2D Heatmap - {axes[0]} vs {axes[1]} vs Power')
+        
+        # Add scatter points
+        ax.scatter(positions[:, 0], positions[:, 1], c=powers, s=20, cmap='viridis', alpha=0.7, edgecolors='white', linewidth=0.5)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'heatmap_2D_{timestamp}.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(log_dir, f'heatmap_2D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+    elif len(axes) >= 3:
+        # 3D volumetric visualization
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # 3D scatter plot with color mapping
+        scatter = ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], 
+                           c=powers, cmap='viridis', s=50, alpha=0.8)
+        
+        # Colorbar
+        cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+        cbar.set_label('Power (dBm)')
+        
+        # Labels and title
+        ax.set_xlabel(f'{axes[0]} Position')
+        ax.set_ylabel(f'{axes[1]} Position')
+        ax.set_zlabel(f'{axes[2]} Position')
+        ax.set_title(f'3D Volumetric Scan - {axes[0]} vs {axes[1]} vs {axes[2]} vs Power')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'heatmap_3D_{timestamp}.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(log_dir, f'heatmap_3D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Also create 2D projections
+        for i in range(3):
+            for j in range(i+1, 3):
+                fig, ax = plt.subplots(figsize=(8, 6))
+                scatter = ax.scatter(positions[:, i], positions[:, j], c=powers, cmap='viridis', s=30, alpha=0.8)
+                cbar = plt.colorbar(scatter, ax=ax)
+                cbar.set_label('Power (dBm)')
+                ax.set_xlabel(f'{axes[i]} Position')
+                ax.set_ylabel(f'{axes[j]} Position')
+                ax.set_title(f'2D Projection: {axes[i]} vs {axes[j]} vs Power')
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.savefig(os.path.join(log_dir, f'projection_{axes[i]}_{axes[j]}_{timestamp}.png'), dpi=300, bbox_inches='tight')
+                plt.close()
+    
+    print(f"Heatmaps saved to {log_dir}")
+
+# GUI Application
+class OptimizerApp:
+    def __init__(self, root):
+        self.root = root
+        root.title("Integrated Laser + DS102 Optimizer")
+        root.geometry("1200x800")
+        
+        # Variables
+        self.pump1_current = tk.DoubleVar(value=50)
+        self.pump2_current = tk.DoubleVar(value=50)
+        self.signal_power = tk.DoubleVar(value=0.0)
+        # Remove scan_mode variable as we now use separate buttons
+        
+        # Axis configuration
+        self.axis_enabled = {}
+        self.axis_entries = {}
+        self.current_positions = {}
+        
+        # Initialize axis variables
+        for axis in AXES:
+            self.axis_enabled[axis] = tk.BooleanVar(value=False)
+            self.axis_entries[axis] = {}
+            self.current_positions[axis] = 0
+        
+        self.setup_ui()
+        
+        # Data storage
+        self.iterations, self.powers, self.colors, self.positions = [], [], [], []
+        
+        # Read initial positions
+        self.read_current_positions()
+    
+    def setup_ui(self):
+        # Main frame
+        main_frame = tk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Left panel for controls
+        control_frame = tk.Frame(main_frame)
+        control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        
+        # Laser controls
+        laser_frame = tk.LabelFrame(control_frame, text="Laser Controls", font=("Arial", 12, "bold"))
+        laser_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        tk.Label(laser_frame, text="Pump 1 Current (mA):").pack()
+        tk.Scale(laser_frame, variable=self.pump1_current, from_=0, to=80, orient='horizontal').pack(fill=tk.X)
+        
+        tk.Label(laser_frame, text="Pump 2 Current (mA):").pack()
+        tk.Scale(laser_frame, variable=self.pump2_current, from_=0, to=80, orient='horizontal').pack(fill=tk.X)
+        
+        tk.Label(laser_frame, text="Signal Laser Power (dBm):").pack()
+        tk.Scale(laser_frame, variable=self.signal_power, from_=-20, to=10, resolution=0.1, orient='horizontal').pack(fill=tk.X)
+        
+        # Scan mode selection - Remove radio buttons, will use separate buttons instead
+        
+        # DS102 Axis Configuration
+        self.setup_axis_config(control_frame)
+        
+        # Control buttons
+        button_frame = tk.Frame(control_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(button_frame, text="Start Optimization", command=self.run_optimization).pack(side=tk.LEFT)
+        
+        # Status
+        self.status = tk.Label(control_frame, text="Ready.", font=("Arial", 12), fg="blue")
+        self.status.pack(pady=10)
+        
+        # Right panel for plot
+        plot_frame = tk.Frame(main_frame)
+        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    
+    def setup_axis_config(self, parent):
+        """Setup DS102 axis configuration UI"""
+        axis_frame = tk.LabelFrame(parent, text="DS102 Axis Configuration", font=("Arial", 12, "bold"))
+        axis_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Headers
+        headers = ["Axis", "Enable", "Current", "Start", "Stop", "Steps"]
+        for i, header in enumerate(headers):
+            tk.Label(axis_frame, text=header, font=("Arial", 10, "bold")).grid(row=0, column=i, padx=2, pady=2)
+        
+        # Axis rows
+        for i, axis in enumerate(AXES):
+            row = i + 1
+            
+            # Axis label
+            tk.Label(axis_frame, text=axis).grid(row=row, column=0, padx=2, pady=2)
+            
+            # Enable checkbox
+            tk.Checkbutton(axis_frame, variable=self.axis_enabled[axis]).grid(row=row, column=1, padx=2, pady=2)
+            
+            # Current position (read-only)
+            current_entry = tk.Entry(axis_frame, width=8, state="readonly")
+            current_entry.grid(row=row, column=2, padx=2, pady=2)
+            self.axis_entries[axis]['current'] = current_entry
+            
+            # Start position
+            start_entry = tk.Entry(axis_frame, width=8)
+            start_entry.grid(row=row, column=3, padx=2, pady=2)
+            self.axis_entries[axis]['start'] = start_entry
+            
+            # Stop position
+            stop_entry = tk.Entry(axis_frame, width=8)
+            stop_entry.grid(row=row, column=4, padx=2, pady=2)
+            self.axis_entries[axis]['stop'] = stop_entry
+            
+            # Steps
+            steps_entry = tk.Entry(axis_frame, width=8)
+            steps_entry.insert(0, "10")  # Default value
+            steps_entry.grid(row=row, column=5, padx=2, pady=2)
+            self.axis_entries[axis]['steps'] = steps_entry
+    
+    def read_current_positions(self):
+        """Read current positions from DS102"""
+        try:
+            self.status.config(text="Reading DS102 positions...")
+            self.root.update()
+            
+            ser = serial.Serial(STAGE_PORT, baudrate=BAUDRATE, timeout=0.5)
+            positions = get_all_positions(ser)
+            ser.close()
+            
+            # Update UI
+            for axis in AXES:
+                self.current_positions[axis] = positions[axis]
+                entry = self.axis_entries[axis]['current']
+                entry.config(state="normal")
+                entry.delete(0, tk.END)
+                entry.insert(0, str(positions[axis]))
+                entry.config(state="readonly")
+                
+                # Set default start/stop values if empty
+                if not self.axis_entries[axis]['start'].get():
+                    self.axis_entries[axis]['start'].insert(0, str(positions[axis] - 1000))
+                if not self.axis_entries[axis]['stop'].get():
+                    self.axis_entries[axis]['stop'].insert(0, str(positions[axis] + 1000))
+            
+            self.status.config(text="Positions read successfully.")
+            
         except Exception as e:
-            messagebox.showerror("Serial Error", str(e))
+            self.status.config(text=f"Error reading positions: {e}")
+            messagebox.showerror("Error", f"Failed to read DS102 positions: {e}")
 
+    def update_plot(self, iteration, power, axis, position):
+        self.iterations.append(iteration)
+        self.powers.append(power)
+        self.colors.append(AXIS_COLORS[axis])
+        self.positions.append(position.copy())
+        self.ax.clear()
+        self.ax.set_title("Power vs Iteration")
+        self.ax.scatter(self.iterations, self.powers, c=self.colors)
+        self.ax.grid(True)
+        self.canvas.draw()
+
+    def get_scan_parameters(self):
+        """Get scan parameters for enabled axes"""
+        scan_params = {}
+        enabled_axes = []
+        
+        for axis in AXES:
+            if self.axis_enabled[axis].get():
+                try:
+                    start = float(self.axis_entries[axis]['start'].get())
+                    stop = float(self.axis_entries[axis]['stop'].get())
+                    steps = int(self.axis_entries[axis]['steps'].get())
+                    
+                    if steps < 2:
+                        raise ValueError(f"Steps for {axis} must be >= 2")
+                    
+                    scan_params[axis] = np.linspace(start, stop, steps)
+                    enabled_axes.append(axis)
+                    
+                except ValueError as e:
+                    messagebox.showerror("Input Error", f"Invalid parameters for axis {axis}: {e}")
+                    return None, None
+        
+        return scan_params, enabled_axes
+    
+    def run_climb_hill(self):
+        """Run hill climbing optimization (random walk + hill climb)"""
+        try:
+            self.status.config(text="Initializing hill climb...")
+            self.root.update()
+
+            # Initialize instruments
+            rm = pyvisa.ResourceManager()
+            p1 = rm.open_resource(PUMP1_ADDRESS)
+            p2 = rm.open_resource(PUMP2_ADDRESS)
+            sgl = rm.open_resource(SIGNAL_ADDRESS)
+            pwr = rm.open_resource(POWER_METER_ADDRESS)
+            ser = serial.Serial(STAGE_PORT, baudrate=BAUDRATE, timeout=1)
+            ser.reset_input_buffer()
+
+            # Setup lasers
+            setup_pump(p1, self.pump1_current.get() / 1000)
+            setup_pump(p2, self.pump2_current.get() / 1000)
+            setup_signal(sgl, self.signal_power.get())
+
+            # Get origin positions
+            origin_positions = get_all_positions(ser)
+            
+            # Clear previous data
+            self.iterations, self.powers, self.colors, self.positions = [], [], [], []
+            
+            self.status.config(text="Running hill climb optimization...")
+            self.root.update()
+            
+            i = 0
+            position = origin_positions.copy()
+            
+            # Random walk first
+            self.status.config(text="Phase 1: Random walk exploration...")
+            self.root.update()
+            for axis, pos, pwrval in random_walk(pwr, ser, position, 20, INITIAL_STEP):
+                self.update_plot(i, pwrval, axis, pos)
+                i += 1
+                self.root.update()
+                
+            # Then hill climb
+            self.status.config(text="Phase 2: Hill climb optimization...")
+            self.root.update()
+            for axis, pos, pwrval in hill_climb(pwr, ser, position, INITIAL_STEP):
+                self.update_plot(i, pwrval, axis, pos)
+                i += 1
+                self.root.update()
+
+            # Return to origin
+            self.status.config(text="Returning to origin positions...")
+            self.root.update()
+            for ax in AXES:
+                move_axis_to(ser, ax, origin_positions[ax])
+
+            # Display results
+            if self.powers:
+                max_idx = np.argmax(self.powers)
+                best = self.powers[max_idx]
+                pos_str = ', '.join([f"{a}:{self.positions[max_idx][a]}" for a in AXES])
+                self.status.config(text=f"Hill climb complete! Max: {best:.2f} dBm @ {pos_str}")
+            else:
+                self.status.config(text="Hill climb completed - no data collected")
+
+            self.save_results()
+
+            # Cleanup
+            p1.write("OUTP:STAT OFF")
+            p2.write("OUTP:STAT OFF")
+            sgl.write(":SOUR1:POW:STAT OFF")
+            p1.close(); p2.close(); sgl.close(); pwr.close(); ser.close()
+
+        except Exception as e:
+            self.status.config(text=f"[ERROR] {e}")
+            messagebox.showerror("Error", f"Hill climb failed: {e}")
+            print(e)
+
+    def save_results(self):
+        """Save hill climb results"""
+        os.makedirs("log", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(f"log/climb_hill_{ts}.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Iteration", "Power (dBm)", "Axis"] + AXES)
+            for i, (pwr, color, pos) in enumerate(zip(self.powers, self.colors, self.positions)):
+                # Find axis from color
+                axis = [a for a, c in AXIS_COLORS.items() if c == color][0] if color in AXIS_COLORS.values() else 'Unknown'
+                writer.writerow([i, pwr, axis] + [pos[a] for a in AXES])
+        self.fig.savefig(f"log/climb_hill_plot_{ts}.png")
+        self.fig.savefig(f"log/climb_hill_plot_{ts}.bmp")
+        print(f"[INFO] Hill climb results saved to log/climb_hill_{ts}.*")
+    
+    def save_scan_results(self, scan_data, enabled_axes, timestamp, log_dir):
+        """Save brute force scan results"""
+        with open(os.path.join(log_dir, f"scan_data_{timestamp}.csv"), "w", newline="") as f:
+            writer = csv.writer(f)
+            header = ["Index", "Power (dBm)"] + [f"{ax}_Position" for ax in AXES]
+            writer.writerow(header)
+            
+            for point in scan_data:
+                row = [point['index'], point['power']] + [point['position'][ax] for ax in AXES]
+                writer.writerow(row)
+        
+        # Save current plot
+        self.fig.savefig(os.path.join(log_dir, f"scan_plot_{timestamp}.png"))
+        self.fig.savefig(os.path.join(log_dir, f"scan_plot_{timestamp}.bmp"))
+        
+        print(f"[INFO] Scan results saved to {log_dir}")
+
+# Launch GUI
 if __name__ == "__main__":
-    app = DualStageScanGUI()
-    app.mainloop()
+    root = tk.Tk()
+    app = OptimizerApp(root)
+    root.mainloop()
