@@ -15,6 +15,9 @@ from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 from PIL import Image
+import requests
+import json
+import webbrowser
 
 # Hardware setup
 PUMP1_ADDRESS = "USB0::0x1313::0x804F::M01093719::0::INSTR"
@@ -28,7 +31,7 @@ AXIS_COLORS = {'X': 'red', 'Y': 'green', 'Z': 'blue', 'U': 'cyan', 'V': 'magenta
 SLEEP_TIME = 0.2
 INITIAL_STEP = 100
 MIN_STEP = 10
-INDEX_MATCHING = 40
+INDEX_MATCHING = 40  # WARNING: This adds 40 dBm to all readings! Investigate if correct!
 
 # Pump laser setup
 def setup_pump(inst, current_amps):
@@ -87,14 +90,103 @@ def get_all_positions(ser):
         positions[axis] = get_axis_position(ser, axis)
     return positions
 
-# Power meter - updated to use channel 1
-def read_power(inst):
+# Power meter - updated to use channel 1 with debugging
+def read_power(inst, debug=False):
     try:
-        inst.write("READ1:POW?")
-        return INDEX_MATCHING + float(inst.read())
+        # Try multiple SCPI commands to find the correct one
+        commands_to_try = [
+            "READ1:pow?",  # Current command
+            "READ:ch1:pow?",  # Alternative format
+            "meas1:pow?",  # Measurement command
+            "fetch1:pow?",  # Fetch command
+            ":read1:pow?",  # With leading colon
+            "read:pow? (@1)",  # Channel syntax
+        ]
+        
+        raw_reading = None
+        successful_command = None
+        
+        for cmd in commands_to_try:
+            try:
+                if debug:
+                    print(f"[DEBUG] Trying command: {cmd}")
+                inst.write(cmd)
+                raw_reading = float(inst.read())
+                successful_command = cmd
+                break
+            except Exception as cmd_error:
+                if debug:
+                    print(f"[DEBUG] Command {cmd} failed: {cmd_error}")
+                continue
+        
+        if raw_reading is None:
+            print(f"[ERROR] All power reading commands failed")
+            return None
+            
+        # Apply INDEX_MATCHING offset (investigate if this is correct)
+        adjusted_reading = INDEX_MATCHING + raw_reading
+        
+        if debug:
+            print(f"[DEBUG] Successful command: {successful_command}")
+            print(f"[DEBUG] Raw reading: {raw_reading:.6f} dBm")
+            print(f"[DEBUG] INDEX_MATCHING offset: {INDEX_MATCHING}")
+            print(f"[DEBUG] Final reading: {adjusted_reading:.6f} dBm")
+            
+        return adjusted_reading
+        
     except Exception as e:
         print(f"[ERROR] Power read failed: {e}")
         return None
+
+def read_power_web_interface():
+    """Read power from Keysight web interface for comparison"""
+    try:
+        # Try to get data from the web interface
+        url = "http://100.65.16.193/pm/index.html?page=ch1"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            # This is a basic approach - the actual API endpoint might be different
+            # We might need to find the AJAX/API endpoint that returns the power value
+            print(f"[DEBUG] Web interface accessible at: {url}")
+            return url
+        else:
+            print(f"[DEBUG] Web interface not accessible: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"[DEBUG] Cannot access web interface: {e}")
+        return None
+
+def compare_power_readings(inst, debug=True):
+    """Compare SCPI reading with web interface"""
+    print("\n" + "="*60)
+    print("POWER READING COMPARISON")
+    print("="*60)
+    
+    # Get SCPI reading
+    scpi_reading = read_power(inst, debug=True)
+    
+    # Try to access web interface
+    web_url = read_power_web_interface()
+    
+    print(f"\nSCPI Reading: {scpi_reading:.1f} dBm" if scpi_reading else "SCPI Reading: FAILED")
+    
+    if web_url:
+        print(f"Web Interface: {web_url}")
+        print("Please manually compare the web interface value with the SCPI reading above.")
+        
+        # Try to open web browser for manual comparison
+        try:
+            webbrowser.open(web_url)
+            print("Web interface opened in browser for manual verification.")
+        except:
+            print("Could not open web browser automatically.")
+    else:
+        print("Web Interface: NOT ACCESSIBLE")
+    
+    print("="*60)
+    return scpi_reading
 
 # Optimization
 def random_walk(inst, ser, position, iterations, step_size):
@@ -150,8 +242,8 @@ def systematic_scan(inst, ser, scan_params, origin_positions):
             move_axis_to(ser, ax, val)
             current_pos[ax] = val
         
-        # Read power
-        power = read_power(inst)
+        # Read power with debugging
+        power = read_power(inst, debug=True)
         if power is not None:
             history.append((axes[0], current_pos, power))
         
@@ -196,8 +288,8 @@ def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callb
             move_axis_to(ser, ax, pos[i])
             current_pos[ax] = pos[i]
         
-        # Read power
-        power = read_power(inst)
+        # Read power with debugging
+        power = read_power(inst, debug=True)
         if power is not None:
             # Store position and power data
             scan_point = {
@@ -469,6 +561,54 @@ class OptimizerApp:
         except Exception as e:
             self.status.config(text=f"Error reading positions: {e}")
             messagebox.showerror("Error", f"Failed to read DS102 positions: {e}")
+
+    def debug_power_reading(self):
+        \"\"\"Debug power meter readings and compare with web interface\"\"\"
+        try:
+            self.status.config(text=\"Debugging power meter readings...\")
+            self.root.update()
+            
+            # Initialize power meter
+            rm = pyvisa.ResourceManager()
+            pwr = rm.open_resource(POWER_METER_ADDRESS)
+            pwr.timeout = 5000
+            
+            # Get instrument info
+            try:
+                idn = pwr.query(\"*IDN?\")
+                print(f\"\\n[DEBUG] Instrument ID: {idn.strip()}\")
+            except:
+                print(\"\\n[DEBUG] Could not get instrument ID\")
+            
+            # Compare readings
+            compare_power_readings(pwr, debug=True)
+            
+            # Show multiple readings for consistency
+            print(\"\\n[DEBUG] Taking 5 consecutive readings:\")
+            readings = []
+            for i in range(5):
+                reading = read_power(pwr, debug=False)
+                if reading is not None:
+                    readings.append(reading)
+                    print(f\"Reading {i+1}: {reading:.1f} dBm\")
+                time.sleep(0.5)
+            
+            if readings:
+                avg_reading = np.mean(readings)
+                std_reading = np.std(readings)
+                print(f\"\\nAverage: {avg_reading:.1f} dBm\")
+                print(f\"Std Dev: {std_reading:.1f} dBm\")
+                
+                self.status.config(text=f\"Debug complete. Avg: {avg_reading:.1f} dBm, StdDev: {std_reading:.1f} dBm\")
+            else:
+                self.status.config(text=\"Debug failed - no valid readings\")
+            
+            pwr.close()
+            
+        except Exception as e:
+            self.status.config(text=f\"Debug error: {e}\")
+            messagebox.showerror(\"Debug Error\", f\"Power meter debug failed: {e}\")
+            print(f\"[ERROR] Debug failed: {e}\")
 
     def update_plot(self, iteration, power, axis, position):
         self.iterations.append(iteration)
