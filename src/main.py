@@ -31,7 +31,7 @@ AXIS_COLORS = {'X': 'red', 'Y': 'green', 'Z': 'blue', 'U': 'cyan', 'V': 'magenta
 SLEEP_TIME = 0.2
 INITIAL_STEP = 100
 MIN_STEP = 10
-INDEX_MATCHING = 40  # WARNING: This adds 40 dBm to all readings! Investigate if correct!
+INDEX_MATCHING = 0  # Set to 0 since power meter readings are already matched
 
 # Pump laser setup
 def setup_pump(inst, current_amps):
