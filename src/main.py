@@ -377,7 +377,8 @@ class OptimizerApp:
         button_frame.pack(fill=tk.X, pady=10)
         
         tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 5))
-        tk.Button(button_frame, text="Start Optimization", command=self.run_optimization).pack(side=tk.LEFT)
+        tk.Button(button_frame, text="Scan", command=self.run_brute_force_scan, bg="lightblue").pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(button_frame, text="ClimbHill", command=self.run_climb_hill, bg="lightgreen").pack(side=tk.LEFT)
         
         # Status
         self.status = tk.Label(control_frame, text="Ready.", font=("Arial", 12), fg="blue")
