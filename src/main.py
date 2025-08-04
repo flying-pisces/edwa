@@ -226,17 +226,25 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
     positions = np.array([[point['position'][ax] for ax in axes] for point in scan_data])
     powers = np.array([point['power'] for point in scan_data])
     
+    # Find peak power and position for title
+    max_idx = np.argmax(powers)
+    peak_power = powers[max_idx]
+    peak_positions = {ax: positions[max_idx][i] for i, ax in enumerate(axes)}
+    
+    # Format all XYZUVW positions for title
+    all_axes = ['X', 'Y', 'Z', 'U', 'V', 'W']
+    position_str = ', '.join([f"{ax}:{peak_positions.get(ax, 0):.0f}" for ax in all_axes])
+    
     if len(axes) == 1:
         # 1D plot
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(positions[:, 0], powers, 'b-o', markersize=4)
         ax.set_xlabel(f'{axes[0]} Position')
         ax.set_ylabel('Power (dBm)')
-        ax.set_title(f'1D Scan - {axes[0]} vs Power')
+        ax.set_title(f'1D Scan - {axes[0]} vs Power\nPeak: {peak_power:.1f} dBm at [{position_str}]')
         ax.grid(True)
         plt.tight_layout()
         plt.savefig(os.path.join(log_dir, f'heatmap_1D_{timestamp}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(log_dir, f'heatmap_1D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
         plt.close()
         
     elif len(axes) == 2:
@@ -262,14 +270,13 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
         # Labels and title
         ax.set_xlabel(f'{axes[0]} Position')
         ax.set_ylabel(f'{axes[1]} Position')
-        ax.set_title(f'2D Heatmap - {axes[0]} vs {axes[1]} vs Power')
+        ax.set_title(f'2D Heatmap - {axes[0]} vs {axes[1]} vs Power\nPeak: {peak_power:.1f} dBm at [{position_str}]')
         
         # Add scatter points
         ax.scatter(positions[:, 0], positions[:, 1], c=powers, s=20, cmap='viridis', alpha=0.7, edgecolors='white', linewidth=0.5)
         
         plt.tight_layout()
         plt.savefig(os.path.join(log_dir, f'heatmap_2D_{timestamp}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(log_dir, f'heatmap_2D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
         plt.close()
         
     elif len(axes) >= 3:
@@ -289,11 +296,10 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
         ax.set_xlabel(f'{axes[0]} Position')
         ax.set_ylabel(f'{axes[1]} Position')
         ax.set_zlabel(f'{axes[2]} Position')
-        ax.set_title(f'3D Volumetric Scan - {axes[0]} vs {axes[1]} vs {axes[2]} vs Power')
+        ax.set_title(f'3D Volumetric Scan - {axes[0]} vs {axes[1]} vs {axes[2]} vs Power\nPeak: {peak_power:.1f} dBm at [{position_str}]')
         
         plt.tight_layout()
         plt.savefig(os.path.join(log_dir, f'heatmap_3D_{timestamp}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(log_dir, f'heatmap_3D_{timestamp}.bmp'), dpi=300, bbox_inches='tight')
         plt.close()
         
         # Also create 2D projections
@@ -305,7 +311,7 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
                 cbar.set_label('Power (dBm)')
                 ax.set_xlabel(f'{axes[i]} Position')
                 ax.set_ylabel(f'{axes[j]} Position')
-                ax.set_title(f'2D Projection: {axes[i]} vs {axes[j]} vs Power')
+                ax.set_title(f'2D Projection: {axes[i]} vs {axes[j]} vs Power\nPeak: {peak_power:.1f} dBm at [{position_str}]')
                 ax.grid(True, alpha=0.3)
                 plt.tight_layout()
                 plt.savefig(os.path.join(log_dir, f'projection_{axes[i]}_{axes[j]}_{timestamp}.png'), dpi=300, bbox_inches='tight')
@@ -561,8 +567,8 @@ class OptimizerApp:
                 best_point = max(scan_data, key=lambda x: x['power'])
                 best_power = best_point['power']
                 best_pos = best_point['position']
-                pos_str = ', '.join([f"{a}:{best_pos[a]}" for a in AXES])
-                self.status.config(text=f"Scan Complete! Max: {best_power:.2f} dBm @ {pos_str}")
+                pos_str = ', '.join([f"{a}:{best_pos[a]:.0f}" for a in AXES])
+                self.status.config(text=f"Scan Complete! Max: {best_power:.1f} dBm @ {pos_str}")
             else:
                 self.status.config(text="Scan completed - no data collected")
             
@@ -635,8 +641,8 @@ class OptimizerApp:
             if self.powers:
                 max_idx = np.argmax(self.powers)
                 best = self.powers[max_idx]
-                pos_str = ', '.join([f"{a}:{self.positions[max_idx][a]}" for a in AXES])
-                self.status.config(text=f"Hill climb complete! Max: {best:.2f} dBm @ {pos_str}")
+                pos_str = ', '.join([f"{a}:{self.positions[max_idx][a]:.0f}" for a in AXES])
+                self.status.config(text=f"Hill climb complete! Max: {best:.1f} dBm @ {pos_str}")
             else:
                 self.status.config(text="Hill climb completed - no data collected")
 
@@ -665,7 +671,6 @@ class OptimizerApp:
                 axis = [a for a, c in AXIS_COLORS.items() if c == color][0] if color in AXIS_COLORS.values() else 'Unknown'
                 writer.writerow([i, pwr, axis] + [pos[a] for a in AXES])
         self.fig.savefig(f"log/climb_hill_plot_{ts}.png")
-        self.fig.savefig(f"log/climb_hill_plot_{ts}.bmp")
         print(f"[INFO] Hill climb results saved to log/climb_hill_{ts}.*")
     
     def save_scan_results(self, scan_data, enabled_axes, timestamp, log_dir):
@@ -681,7 +686,6 @@ class OptimizerApp:
         
         # Save current plot
         self.fig.savefig(os.path.join(log_dir, f"scan_plot_{timestamp}.png"))
-        self.fig.savefig(os.path.join(log_dir, f"scan_plot_{timestamp}.bmp"))
         
         print(f"[INFO] Scan results saved to {log_dir}")
 
