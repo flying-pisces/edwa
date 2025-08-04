@@ -563,9 +563,9 @@ class OptimizerApp:
             messagebox.showerror("Error", f"Failed to read DS102 positions: {e}")
 
     def debug_power_reading(self):
-        \"\"\"Debug power meter readings and compare with web interface\"\"\"
+        """Debug power meter readings and compare with web interface"""
         try:
-            self.status.config(text=\"Debugging power meter readings...\")
+            self.status.config(text="Debugging power meter readings...")
             self.root.update()
             
             # Initialize power meter
@@ -575,40 +575,40 @@ class OptimizerApp:
             
             # Get instrument info
             try:
-                idn = pwr.query(\"*IDN?\")
-                print(f\"\\n[DEBUG] Instrument ID: {idn.strip()}\")
+                idn = pwr.query("*IDN?")
+                print(f"\n[DEBUG] Instrument ID: {idn.strip()}")
             except:
-                print(\"\\n[DEBUG] Could not get instrument ID\")
+                print("\n[DEBUG] Could not get instrument ID")
             
             # Compare readings
             compare_power_readings(pwr, debug=True)
             
             # Show multiple readings for consistency
-            print(\"\\n[DEBUG] Taking 5 consecutive readings:\")
+            print("\n[DEBUG] Taking 5 consecutive readings:")
             readings = []
             for i in range(5):
                 reading = read_power(pwr, debug=False)
                 if reading is not None:
                     readings.append(reading)
-                    print(f\"Reading {i+1}: {reading:.1f} dBm\")
+                    print(f"Reading {i+1}: {reading:.1f} dBm")
                 time.sleep(0.5)
             
             if readings:
                 avg_reading = np.mean(readings)
                 std_reading = np.std(readings)
-                print(f\"\\nAverage: {avg_reading:.1f} dBm\")
-                print(f\"Std Dev: {std_reading:.1f} dBm\")
+                print(f"\nAverage: {avg_reading:.1f} dBm")
+                print(f"Std Dev: {std_reading:.1f} dBm")
                 
-                self.status.config(text=f\"Debug complete. Avg: {avg_reading:.1f} dBm, StdDev: {std_reading:.1f} dBm\")
+                self.status.config(text=f"Debug complete. Avg: {avg_reading:.1f} dBm, StdDev: {std_reading:.1f} dBm")
             else:
-                self.status.config(text=\"Debug failed - no valid readings\")
+                self.status.config(text="Debug failed - no valid readings")
             
             pwr.close()
             
         except Exception as e:
-            self.status.config(text=f\"Debug error: {e}\")
-            messagebox.showerror(\"Debug Error\", f\"Power meter debug failed: {e}\")
-            print(f\"[ERROR] Debug failed: {e}\")
+            self.status.config(text=f"Debug error: {e}")
+            messagebox.showerror("Debug Error", f"Power meter debug failed: {e}")
+            print(f"[ERROR] Debug failed: {e}")
 
     def update_plot(self, iteration, power, axis, position):
         self.iterations.append(iteration)
