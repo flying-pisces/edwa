@@ -37,6 +37,7 @@ AXIS_COLORS = {'X': 'red', 'Y': 'green', 'Z': 'blue', 'U': 'cyan', 'V': 'magenta
 SLEEP_TIME = 0.2
 INITIAL_STEP = 100
 MIN_STEP = 10
+RANDOM_STEPS = 20  # Number of random walk steps before hill climbing
 INDEX_MATCHING = 0  # Set to 0 since power meter readings are already matched
 
 # Pump laser setup
@@ -287,9 +288,14 @@ def compare_power_readings(inst, debug=True):
     return scpi_reading
 
 # Optimization
-def random_walk(inst, ser, position, iterations, step_size):
+def random_walk(inst, ser, position, iterations, step_size, stop_check=None):
     history = []
-    for _ in range(iterations):
+    for i in range(iterations):
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Random walk stopped at iteration {i+1}/{iterations}")
+            break
+            
         axis = np.random.choice(AXES)
         direction = np.random.choice([-1, 1])
         move_stage(ser, axis, direction * step_size)
@@ -301,13 +307,23 @@ def random_walk(inst, ser, position, iterations, step_size):
             move_stage(ser, axis, -direction * step_size)
     return history
 
-def hill_climb(inst, ser, position, step_size):
+def hill_climb(inst, ser, position, step_size, stop_check=None):
     improved = True
     history = []
     base_power = read_power(inst)
     while improved and step_size >= MIN_STEP:
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Hill climb stopped")
+            break
+            
         improved = False
         for axis in AXES:
+            # Check for stop request before each axis
+            if stop_check and stop_check():
+                print(f"[INFO] Hill climb stopped during axis {axis} optimization")
+                return history
+                
             for direction in [1, -1]:
                 move_stage(ser, axis, direction * step_size)
                 power = read_power(inst)
@@ -320,6 +336,169 @@ def hill_climb(inst, ser, position, step_size):
                     move_stage(ser, axis, -direction * step_size)
         if not improved:
             step_size = step_size // 2
+    return history
+
+def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
+    """Hill climb optimization using ALL 6 axes (XYZUVW) with improved algorithm"""
+    improved = True
+    history = []
+    base_power = read_power(inst)
+    iteration_count = 0
+    max_iterations = 200  # Prevent infinite loops
+    
+    print(f"[INFO] Starting hill climb on all 6 axes from power: {base_power:.1f} dBm")
+    
+    while improved and step_size >= MIN_STEP and iteration_count < max_iterations:
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Hill climb stopped at iteration {iteration_count}")
+            break
+            
+        improved = False
+        iteration_count += 1
+        
+        # Try optimization on ALL 6 axes in each iteration
+        for axis in AXES:
+            # Check for stop request before each axis
+            if stop_check and stop_check():
+                print(f"[INFO] Hill climb stopped during axis {axis} optimization")
+                return history
+                
+            best_direction = None
+            best_power = base_power
+            
+            # Try both directions for current axis
+            for direction in [1, -1]:
+                move_stage(ser, axis, direction * step_size)
+                time.sleep(0.05)  # Small delay for stage settling
+                power = read_power(inst)
+                
+                if power is not None and power > best_power:
+                    best_power = power
+                    best_direction = direction
+                
+                # Move back to test the other direction
+                move_stage(ser, axis, -direction * step_size)
+                time.sleep(0.05)
+            
+            # If we found improvement, make the move permanent
+            if best_direction is not None:
+                move_stage(ser, axis, best_direction * step_size)
+                position[axis] += best_direction * step_size
+                history.append((axis, position.copy(), best_power))
+                improved = True
+                base_power = best_power
+                print(f"[HILLCLIMB] Axis {axis}: {best_direction*step_size:+.0f} → {best_power:.1f} dBm")
+        
+        # If no improvement found, reduce step size
+        if not improved:
+            step_size = step_size // 2
+            print(f"[HILLCLIMB] Reducing step size to {step_size}")
+    
+    print(f"[INFO] Hill climb completed after {iteration_count} iterations")
+    return history
+
+def random_walk_constrained(inst, ser, position, center_positions, iterations, step_size, stop_check=None):
+    """Random walk with ±100 constraint from center positions for all 6 axes"""
+    history = []
+    for i in range(iterations):
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Constrained random walk stopped at iteration {i+1}/{iterations}")
+            break
+            
+        axis = np.random.choice(AXES)
+        direction = np.random.choice([-1, 1])
+        move_amount = direction * step_size
+        
+        # Calculate new position
+        new_position = position[axis] + move_amount
+        
+        # Check if new position is within ±100 of center position
+        center_pos = center_positions[axis]
+        if abs(new_position - center_pos) <= 100:
+            # Move is allowed
+            move_stage(ser, axis, move_amount)
+            power = read_power(inst)
+            if power is not None:
+                position[axis] = new_position
+                history.append((axis, position.copy(), power))
+                print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} → {power:.1f} dBm (within ±100 range)")
+            else:
+                # Move back if power reading failed
+                move_stage(ser, axis, -move_amount)
+        else:
+            # Move would exceed ±100 range, skip this iteration
+            print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} SKIPPED (would exceed ±100 range)")
+    
+    return history
+
+def hill_climb_all_axes_constrained(inst, ser, position, step_size, stop_check=None):
+    """Hill climb optimization using ALL 6 axes with step sizes from 10 down to 1"""
+    improved = True
+    history = []
+    base_power = read_power(inst)
+    iteration_count = 0
+    max_iterations = 200  # Prevent infinite loops
+    min_step = 1  # Minimum step size is 1
+    
+    print(f"[INFO] Starting constrained hill climb on all 6 axes from power: {base_power:.1f} dBm")
+    
+    while improved and step_size >= min_step and iteration_count < max_iterations:
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Constrained hill climb stopped at iteration {iteration_count}")
+            break
+            
+        improved = False
+        iteration_count += 1
+        
+        # Try optimization on ALL 6 axes in each iteration
+        for axis in AXES:
+            # Check for stop request before each axis
+            if stop_check and stop_check():
+                print(f"[INFO] Constrained hill climb stopped during axis {axis} optimization")
+                return history
+                
+            best_direction = None
+            best_power = base_power
+            
+            # Try both directions for current axis
+            for direction in [1, -1]:
+                move_stage(ser, axis, direction * step_size)
+                time.sleep(0.05)  # Small delay for stage settling
+                power = read_power(inst)
+                
+                if power is not None and power > best_power:
+                    best_power = power
+                    best_direction = direction
+                
+                # Move back to test the other direction
+                move_stage(ser, axis, -direction * step_size)
+                time.sleep(0.05)
+            
+            # If we found improvement, make the move permanent
+            if best_direction is not None:
+                move_stage(ser, axis, best_direction * step_size)
+                position[axis] += best_direction * step_size
+                history.append((axis, position.copy(), best_power))
+                improved = True
+                base_power = best_power
+                print(f"[HILLCLIMB] Axis {axis}: {best_direction*step_size:+.0f} → {best_power:.1f} dBm")
+        
+        # If no improvement found, reduce step size
+        if not improved:
+            step_size = step_size // 2
+            if step_size < min_step:
+                step_size = min_step
+            print(f"[HILLCLIMB] Reducing step size to {step_size}")
+            
+            # If we're at minimum step size and no improvement, we're done
+            if step_size == min_step and not improved:
+                print(f"[HILLCLIMB] Reached minimum step size ({min_step}) with no improvement")
+                break
+    
+    print(f"[INFO] Constrained hill climb completed after {iteration_count} iterations")
     return history
 
 def systematic_scan(inst, ser, scan_params, origin_positions):
@@ -354,7 +533,7 @@ def systematic_scan(inst, ser, scan_params, origin_positions):
     
     return history
 
-def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callback=None):
+def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callback=None, stop_check=None):
     """Perform brute force 3D scanning for DS102"""
     scan_data = []
     axes = list(scan_params.keys())
@@ -380,6 +559,11 @@ def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callb
     total_positions = len(positions)
     
     for idx, pos in enumerate(positions):
+        # Check for stop request
+        if stop_check and stop_check():
+            print(f"[INFO] Scan stopped at position {idx+1}/{total_positions}")
+            break
+            
         # Move to scan position
         current_pos = origin_positions.copy()
         for i, ax in enumerate(axes[:len(pos)]):
@@ -534,6 +718,9 @@ class OptimizerApp:
         self.current_pump2_value = 0.0
         self.current_signal_value = 0.0
         
+        # Stop flag for immediate termination
+        self.stop_requested = False
+        
         # Axis configuration
         self.axis_enabled = {}
         self.axis_entries = {}
@@ -571,15 +758,29 @@ class OptimizerApp:
         self.setup_axis_config(control_frame)
         
         # Control buttons
-        button_frame = tk.Frame(control_frame)
-        button_frame.pack(fill=tk.X, pady=10)
+        # Main operation buttons (enlarged)
+        main_button_frame = tk.Frame(control_frame)
+        main_button_frame.pack(fill=tk.X, pady=20)
         
-        tk.Button(button_frame, text="Read Positions", command=self.read_current_positions).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(button_frame, text="Read Lasers", command=self.read_current_laser_values).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(button_frame, text="Screenshots", command=self.capture_screenshots, bg="yellow").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(button_frame, text="Debug Power", command=self.debug_power_reading, bg="orange").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(button_frame, text="Scan", command=self.run_brute_force_scan, bg="lightblue").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(button_frame, text="ClimbHill", command=self.run_climb_hill, bg="lightgreen").pack(side=tk.LEFT)
+        # Create large main buttons with increased size and font
+        scan_button = tk.Button(main_button_frame, text="SCAN", command=self.run_brute_force_scan, 
+                               bg="lightblue", font=("Arial", 14, "bold"), width=12, height=2)
+        scan_button.pack(side=tk.LEFT, padx=10)
+        
+        climbhill_button = tk.Button(main_button_frame, text="CLIMB HILL", command=self.run_climb_hill_with_position_update, 
+                                    bg="lightgreen", font=("Arial", 14, "bold"), width=12, height=2)
+        climbhill_button.pack(side=tk.LEFT, padx=10)
+        
+        self.stop_button = tk.Button(main_button_frame, text="STOP", command=self.request_stop, 
+                                   bg="red", fg="white", font=("Arial", 14, "bold"), width=12, height=2)
+        self.stop_button.pack(side=tk.LEFT, padx=10)
+        
+        # Secondary utility buttons (smaller)
+        utility_button_frame = tk.Frame(control_frame)
+        utility_button_frame.pack(fill=tk.X, pady=10)
+        
+        tk.Button(utility_button_frame, text="Screenshots", command=self.capture_screenshots, bg="yellow").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(utility_button_frame, text="Debug Power", command=self.debug_power_reading, bg="orange").pack(side=tk.LEFT, padx=(0, 2))
         
         # Status
         self.status = tk.Label(control_frame, text="Ready.", font=("Arial", 12), fg="blue")
@@ -686,6 +887,12 @@ class OptimizerApp:
         steps_entry_signal.insert(0, "5")  # Default steps
         steps_entry_signal.grid(row=1, column=4, padx=2, pady=2)
         self.signal_entries['steps'] = steps_entry_signal
+        
+        # Add Read Lasers button to laser section
+        laser_button_frame = tk.Frame(parent)
+        laser_button_frame.pack(fill=tk.X, pady=5)
+        tk.Button(laser_button_frame, text="Read Current Laser Values", command=self.read_current_laser_values, 
+                 bg="lightcyan", font=("Arial", 10, "bold")).pack(anchor="w")
     
     def setup_axis_config(self, parent):
         """Setup DS102 axis configuration UI"""
@@ -727,6 +934,12 @@ class OptimizerApp:
             steps_entry.insert(0, "5")  # Default value
             steps_entry.grid(row=row, column=5, padx=2, pady=2)
             self.axis_entries[axis]['steps'] = steps_entry
+        
+        # Add Read Current Positions button to DS102 section
+        ds102_button_frame = tk.Frame(parent)
+        ds102_button_frame.pack(fill=tk.X, pady=5)
+        tk.Button(ds102_button_frame, text="Read Current DS102 Positions", command=self.read_current_positions, 
+                 bg="lightgray", font=("Arial", 10, "bold")).pack(anchor="w")
     
     def read_current_positions(self):
         """Read current positions from DS102"""
@@ -868,6 +1081,49 @@ class OptimizerApp:
         except Exception as e:
             self.status.config(text=f"Screenshot error: {e}")
             messagebox.showerror("Screenshot Error", f"Failed to capture screenshots: {e}")
+    
+    def request_stop(self):
+        """Request immediate stop of current optimization process"""
+        self.stop_requested = True
+        self.status.config(text="STOP requested - Finishing current iteration and saving results...")
+        self.root.update()
+        
+        # Disable the stop button to prevent multiple clicks
+        self.stop_button.config(state="disabled", text="STOPPING...")
+        
+        print("[INFO] STOP requested by user - will terminate after current iteration")
+    
+    def reset_stop_flag(self):
+        """Reset stop flag and re-enable stop button"""
+        self.stop_requested = False
+        self.stop_button.config(state="normal", text="STOP")
+    
+    def move_to_best_position(self, ser, best_position, best_power, operation_name="Optimization"):
+        """Helper function to move DS102 to the best position found and verify"""
+        try:
+            self.status.config(text=f"{operation_name} - Moving to best position...")
+            self.root.update()
+            
+            # Move to the best position
+            for axis in AXES:
+                target_pos = best_position[axis]
+                move_axis_to(ser, axis, target_pos)
+            
+            # Wait for positioning to complete
+            time.sleep(1)
+            
+            # Verify final position
+            final_pos = get_all_positions(ser)
+            final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+            
+            self.status.config(text=f"{operation_name} complete! At best position - Max: {best_power:.1f} dBm @ {final_pos_str}")
+            return final_pos_str
+            
+        except Exception as e:
+            error_msg = f"{operation_name} complete! Error moving to best position: {e}"
+            self.status.config(text=error_msg)
+            print(f"[ERROR] Failed to move to best position: {e}")
+            return None
 
     def debug_power_reading(self):
         """Debug power meter readings and compare with web interface"""
@@ -923,9 +1179,42 @@ class OptimizerApp:
         self.colors.append(AXIS_COLORS[axis])
         self.positions.append(position.copy())
         self.ax.clear()
-        self.ax.set_title("Power vs Iteration")
-        self.ax.scatter(self.iterations, self.powers, c=self.colors)
-        self.ax.grid(True)
+        
+        # Enhanced plot with axis information
+        self.ax.set_title(f"Power vs Iteration (Current Axis: {axis})", fontsize=12)
+        self.ax.set_xlabel("Iteration")
+        self.ax.set_ylabel("Power (dBm)")
+        
+        # Plot all points with color coding
+        scatter = self.ax.scatter(self.iterations, self.powers, c=self.colors, s=50, alpha=0.7)
+        
+        # Highlight the current point
+        if len(self.iterations) > 0:
+            self.ax.scatter([iteration], [power], c=[AXIS_COLORS[axis]], s=100, 
+                          marker='o', edgecolor='black', linewidth=2, label=f'Current: {axis}')
+        
+        # Add legend showing axis colors
+        legend_elements = []
+        used_axes = set()
+        for i, color in enumerate(self.colors):
+            axis_name = [a for a, c in AXIS_COLORS.items() if c == color][0]
+            if axis_name not in used_axes:
+                legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', 
+                                                markerfacecolor=color, markersize=8, label=f'Axis {axis_name}'))
+                used_axes.add(axis_name)
+        
+        if legend_elements:
+            self.ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1))
+        
+        self.ax.grid(True, alpha=0.3)
+        
+        # Show current position info in status
+        pos_str = ', '.join([f"{a}:{position[a]:.0f}" for a in AXES])
+        current_status = self.status.cget("text")
+        if "Phase" not in current_status:  # Don't override phase information
+            self.status.config(text=f"Optimizing {axis}: {power:.1f} dBm @ {pos_str}")
+        
+        self.fig.tight_layout()
         self.canvas.draw()
 
     def get_scan_parameters(self):
@@ -955,6 +1244,9 @@ class OptimizerApp:
     def run_brute_force_scan(self):
         """Run brute force 3D scanning"""
         try:
+            # Reset stop flag at start
+            self.reset_stop_flag()
+            
             self.status.config(text="Initializing brute force scan...")
             self.root.update()
             
@@ -992,8 +1284,12 @@ class OptimizerApp:
                 self.status.config(text=f"Scanning: {current}/{total} ({100*current/total:.1f}%)")
                 self.root.update()
             
+            # Stop check callback
+            def check_stop():
+                return self.stop_requested
+            
             # Perform brute force scan
-            scan_data = brute_force_3d_scan(pwr, ser, scan_params, origin_positions, update_progress)
+            scan_data = brute_force_3d_scan(pwr, ser, scan_params, origin_positions, update_progress, check_stop)
             
             # Process data for plotting
             for i, point in enumerate(scan_data):
@@ -1019,17 +1315,95 @@ class OptimizerApp:
             # Save scan data
             self.save_scan_results(scan_data, enabled_axes, timestamp, log_dir)
             
-            # Display results
+            # Display results and offer hill climbing
             if scan_data:
                 best_point = max(scan_data, key=lambda x: x['power'])
                 best_power = best_point['power']
                 best_pos = best_point['position']
                 pos_str = ', '.join([f"{a}:{best_pos[a]:.0f}" for a in AXES])
-                self.status.config(text=f"Scan Complete! Max: {best_power:.1f} dBm @ {pos_str}")
+                
+                # Check if scan was stopped
+                if self.stop_requested:
+                    # Move DS102 to the best position found so far
+                    self.status.config(text="STOPPED - Moving to best position found...")
+                    self.root.update()
+                    
+                    try:
+                        for axis in AXES:
+                            target_pos = best_pos[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(1)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Scan STOPPED! Moved to best position - Max: {best_power:.1f} dBm @ {final_pos_str}")
+                        messagebox.showinfo("Scan Stopped", 
+                                          f"Scan was stopped by user.\n\n"
+                                          f"DS102 moved to best position found:\n"
+                                          f"Position: {final_pos_str}\n"
+                                          f"Power: {best_power:.1f} dBm\n\n"
+                                          f"Partial results saved to: {log_dir}\n"
+                                          f"Points scanned: {len(scan_data)}")
+                    except Exception as e:
+                        self.status.config(text=f"Scan STOPPED! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
+                else:
+                    # Move DS102 to the best position found during scan
+                    self.status.config(text="Scan complete - Moving to best position...")
+                    self.root.update()
+                    
+                    try:
+                        for axis in AXES:
+                            target_pos = best_pos[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(1)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Scan Complete! Moved to best position - Max: {best_power:.1f} dBm @ {final_pos_str}")
+                    except Exception as e:
+                        self.status.config(text=f"Scan Complete! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
+                
+                # Show dialog asking if user wants to continue with hill climbing (only if not stopped)
+                if not self.stop_requested:
+                    continue_dialog = messagebox.askyesno(
+                        "Scan Complete", 
+                        f"Scan completed successfully!\n\n"
+                        f"Maximum power found: {best_power:.1f} dBm\n"
+                        f"Best position: {pos_str}\n\n"
+                        f"Would you like to continue with hill climbing optimization?\n"
+                        f"(This will move to the optimal position and perform random walk optimization on all 6 axes)",
+                        icon='question'
+                    )
+                else:
+                    continue_dialog = False  # Don't continue if stopped
+                
+                if continue_dialog:
+                    # Store best position for hill climbing
+                    self.best_scan_position = best_pos
+                    self.best_scan_power = best_power
+                    
+                    # Don't cleanup instruments yet - pass them to hill climbing
+                    self.continue_with_hill_climbing(p1, p2, sgl, pwr, ser, best_pos)
+                    return
+                else:
+                    self.status.config(text="Scan completed - Hill climbing skipped")
             else:
-                self.status.config(text="Scan completed - no data collected")
+                # Even if no data collected, ensure we stay at current position
+                current_pos = get_all_positions(ser)
+                pos_str = ', '.join([f"{a}:{current_pos[a]:.0f}" for a in AXES])
+                self.status.config(text=f"Scan completed - no data collected. At position: {pos_str}")
             
-            # Cleanup
+            # Cleanup and reset stop button
             p1.write("OUTP:STAT OFF")
             p2.write("OUTP:STAT OFF")
             sgl.write(":SOUR1:POW:STAT OFF")
@@ -1039,11 +1413,38 @@ class OptimizerApp:
             self.status.config(text=f"[ERROR] {e}")
             messagebox.showerror("Error", f"Brute force scan failed: {e}")
             print(e)
+        finally:
+            # Always reset stop flag when optimization ends
+            self.reset_stop_flag()
+    
+    def run_climb_hill_with_position_update(self):
+        """Wrapper for hill climbing that updates DS102 positions first"""
+        try:
+            # First, read and update current DS102 positions in the GUI
+            self.read_current_positions()
+            
+            # Small delay to ensure positions are updated
+            time.sleep(0.5)
+            
+            # Then run the hill climbing
+            self.run_climb_hill()
+            
+        except Exception as e:
+            self.status.config(text=f"[ERROR] Failed to update positions before hill climbing: {e}")
+            messagebox.showerror("Error", f"Failed to update DS102 positions: {e}")
     
     def run_climb_hill(self):
-        """Run hill climbing optimization (random walk + hill climb)"""
+        """Run hill climbing optimization on ALL 6 axes from current DS102 position
+        - Starts from current DS102 XYZUVW position
+        - Random walk with ±100 range on all axes
+        - Hill climbing with step sizes 10→1 on all axes
+        - Ignores GUI axis selections (always uses all 6 axes)
+        """
         try:
-            self.status.config(text="Initializing hill climb...")
+            # Reset stop flag at start
+            self.reset_stop_flag()
+            
+            self.status.config(text="Initializing hill climb on all 6 axes...")
             self.root.update()
 
             # Initialize instruments
@@ -1055,53 +1456,117 @@ class OptimizerApp:
             ser = serial.Serial(STAGE_PORT, baudrate=BAUDRATE, timeout=1)
             ser.reset_input_buffer()
 
-            # Setup lasers
-            setup_pump(p1, self.pump1_current.get() / 1000)
-            setup_pump(p2, self.pump2_current.get() / 1000)
-            setup_signal(sgl, self.signal_power.get())
+            # Setup lasers (use current values or defaults)
+            current_pump1 = self.current_pump1_value if hasattr(self, 'current_pump1_value') else self.pump1_current.get()
+            current_pump2 = self.current_pump2_value if hasattr(self, 'current_pump2_value') else self.pump2_current.get()
+            current_signal = self.current_signal_value if hasattr(self, 'current_signal_value') else self.signal_power.get()
+            
+            setup_pump(p1, current_pump1 / 1000)
+            setup_pump(p2, current_pump2 / 1000)
+            setup_signal(sgl, current_signal)
 
-            # Get origin positions
-            origin_positions = get_all_positions(ser)
+            # Get current DS102 positions (starting point for hill climbing)
+            current_positions = get_all_positions(ser)
+            pos_str = ', '.join([f"{a}:{current_positions[a]:.0f}" for a in AXES])
+            print(f"[INFO] Starting hill climb from current DS102 position: {pos_str}")
+            
+            self.status.config(text=f"Hill climbing from: {pos_str}")
+            self.root.update()
             
             # Clear previous data
             self.iterations, self.powers, self.colors, self.positions = [], [], [], []
             
-            self.status.config(text="Running hill climb optimization...")
-            self.root.update()
-            
             i = 0
-            position = origin_positions.copy()
+            position = current_positions.copy()  # Start from current DS102 position
             
-            # Random walk first
-            self.status.config(text="Phase 1: Random walk exploration...")
+            # Stop check callback
+            def check_stop():
+                return self.stop_requested
+            
+            # Phase 1: Random walk exploration on ALL 6 axes with ±100 range
+            self.status.config(text="Phase 1: Random walk exploration on all 6 axes (±100)...")
             self.root.update()
-            for axis, pos, pwrval in random_walk(pwr, ser, position, 20, INITIAL_STEP):
+            
+            # Perform random walk with ±100 range (will be handled by random_walk_constrained function)
+            for axis, pos, pwrval in random_walk_constrained(pwr, ser, position, current_positions, 20, 10, check_stop):
                 self.update_plot(i, pwrval, axis, pos)
                 i += 1
                 self.root.update()
                 
-            # Then hill climb
-            self.status.config(text="Phase 2: Hill climb optimization...")
-            self.root.update()
-            for axis, pos, pwrval in hill_climb(pwr, ser, position, INITIAL_STEP):
-                self.update_plot(i, pwrval, axis, pos)
-                i += 1
+                # Check if stopped during random walk
+                if self.stop_requested:
+                    break
+                
+            # Phase 2: Hill climb optimization on ALL 6 axes (only if not stopped)
+            if not self.stop_requested:
+                self.status.config(text="Phase 2: Hill climb optimization on all 6 axes (steps 10→1)...")
                 self.root.update()
+                
+                # Use hill climbing with smaller steps (10 down to 1)
+                for axis, pos, pwrval in hill_climb_all_axes_constrained(pwr, ser, position, 10, check_stop):
+                    self.update_plot(i, pwrval, axis, pos)
+                    i += 1
+                    self.root.update()
+                    
+                    # Check if stopped during hill climbing
+                    if self.stop_requested:
+                        break
 
-            # Return to origin
-            self.status.config(text="Returning to origin positions...")
-            self.root.update()
-            for ax in AXES:
-                move_axis_to(ser, ax, origin_positions[ax])
-
-            # Display results
+            # Display results and handle positioning
             if self.powers:
                 max_idx = np.argmax(self.powers)
                 best = self.powers[max_idx]
-                pos_str = ', '.join([f"{a}:{self.positions[max_idx][a]:.0f}" for a in AXES])
-                self.status.config(text=f"Hill climb complete! Max: {best:.1f} dBm @ {pos_str}")
+                best_position = self.positions[max_idx]
+                pos_str = ', '.join([f"{a}:{best_position[a]:.0f}" for a in AXES])
+                
+                if self.stop_requested:
+                    # Move DS102 to the best position found during hill climbing
+                    self.status.config(text="STOPPED - Moving to best position found...")
+                    self.root.update()
+                    
+                    try:
+                        for axis in AXES:
+                            target_pos = best_position[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(1)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Hill climb STOPPED! Moved to best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                    except Exception as e:
+                        self.status.config(text=f"Hill climb STOPPED! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
+                else:
+                    # Ensure DS102 is at the best position found
+                    self.status.config(text="Hill climb complete - Verifying best position...")
+                    self.root.update()
+                    
+                    try:
+                        # Move to the best position to ensure we're there
+                        for axis in AXES:
+                            target_pos = best_position[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(0.5)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Hill climb complete! At best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                    except Exception as e:
+                        self.status.config(text=f"Hill climb complete! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
             else:
-                self.status.config(text="Hill climb completed - no data collected")
+                if self.stop_requested:
+                    self.status.config(text="Hill climb stopped - no data collected")
+                else:
+                    self.status.config(text="Hill climb completed - no data collected")
 
             # Capture screenshots for hill climb
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1129,6 +1594,9 @@ class OptimizerApp:
             self.status.config(text=f"[ERROR] {e}")
             messagebox.showerror("Error", f"Hill climb failed: {e}")
             print(e)
+        finally:
+            # Always reset stop flag when optimization ends
+            self.reset_stop_flag()
 
     def save_results(self):
         """Save hill climb results"""
@@ -1143,6 +1611,200 @@ class OptimizerApp:
                 writer.writerow([i, pwr, axis] + [pos[a] for a in AXES])
         self.fig.savefig(f"log/climb_hill_plot_{ts}.png")
         print(f"[INFO] Hill climb results saved to log/climb_hill_{ts}.*")
+    
+    def continue_with_hill_climbing(self, p1, p2, sgl, pwr, ser, best_position):
+        """Continue with hill climbing from the best scan position"""
+        try:
+            self.status.config(text="Moving to optimal position for hill climbing...")
+            self.root.update()
+            
+            # Move to the best position found during scan
+            for axis in AXES:
+                target_pos = best_position[axis]
+                move_axis_to(ser, axis, target_pos)
+                time.sleep(0.1)  # Small delay between moves
+            
+            # Wait for all movements to complete
+            time.sleep(2)
+            
+            # Verify position
+            current_pos = get_all_positions(ser)
+            pos_str = ', '.join([f"{a}:{current_pos[a]:.0f}" for a in AXES])
+            self.status.config(text=f"Positioned at: {pos_str}. Starting hill climbing on all 6 axes...")
+            self.root.update()
+            
+            # Clear previous plotting data for hill climbing phase
+            self.iterations, self.powers, self.colors, self.positions = [], [], [], []
+            
+            # Perform random walk + hill climbing on ALL 6 axes
+            self.status.config(text="Phase 1: Random walk exploration...")
+            self.root.update()
+            
+            i = 0
+            position = current_pos.copy()
+            
+            # Stop check callback
+            def check_stop():
+                return self.stop_requested
+            
+            # Random walk on ALL axes
+            for axis, pos, pwrval in random_walk(pwr, ser, position, RANDOM_STEPS, INITIAL_STEP, check_stop):
+                self.update_plot(i, pwrval, axis, pos)
+                i += 1
+                self.root.update()
+                
+                # Check if stopped during random walk
+                if self.stop_requested:
+                    break
+            
+            # Hill climb on ALL axes (only if not stopped)
+            if not self.stop_requested:
+                self.status.config(text="Phase 2: Hill climb optimization on all 6 axes...")
+                self.root.update()
+                
+                # Modified hill climbing to work on all axes
+                for axis, pos, pwrval in hill_climb_all_axes(pwr, ser, position, INITIAL_STEP, check_stop):
+                    self.update_plot(i, pwrval, axis, pos)
+                    i += 1
+                    self.root.update()
+                    
+                    # Check if stopped during hill climbing
+                    if self.stop_requested:
+                        break
+            
+            # Display final results and handle positioning
+            if self.powers:
+                max_idx = np.argmax(self.powers)
+                best = self.powers[max_idx]
+                best_position = self.positions[max_idx]
+                pos_str = ', '.join([f"{a}:{best_position[a]:.0f}" for a in AXES])
+                
+                if self.stop_requested:
+                    # Move DS102 to the best position found during combined optimization
+                    self.status.config(text="STOPPED - Moving to best position found...")
+                    self.root.update()
+                    
+                    try:
+                        for axis in AXES:
+                            target_pos = best_position[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(1)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Combined optimization STOPPED! Moved to best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                    except Exception as e:
+                        self.status.config(text=f"Combined optimization STOPPED! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
+                else:
+                    # Ensure DS102 is at the best position found during combined optimization
+                    self.status.config(text="Combined optimization complete - Verifying best position...")
+                    self.root.update()
+                    
+                    try:
+                        # Move to the best position to ensure we're there
+                        for axis in AXES:
+                            target_pos = best_position[axis]
+                            move_axis_to(ser, axis, target_pos)
+                        
+                        # Wait for positioning to complete
+                        time.sleep(0.5)
+                        
+                        # Verify final position
+                        final_pos = get_all_positions(ser)
+                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                        
+                        self.status.config(text=f"Combined optimization complete! At best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                    except Exception as e:
+                        self.status.config(text=f"Combined optimization complete! Error moving to best position: {e}")
+                        print(f"[ERROR] Failed to move to best position: {e}")
+            else:
+                if self.stop_requested:
+                    # If no hill climbing data but scan found best position, move there
+                    if hasattr(self, 'best_scan_position') and hasattr(self, 'best_scan_power'):
+                        self.status.config(text="STOPPED - Moving to best scan position...")
+                        self.root.update()
+                        
+                        try:
+                            for axis in AXES:
+                                target_pos = self.best_scan_position[axis]
+                                move_axis_to(ser, axis, target_pos)
+                            
+                            # Wait for positioning to complete
+                            time.sleep(1)
+                            
+                            # Verify final position
+                            final_pos = get_all_positions(ser)
+                            final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                            
+                            self.status.config(text=f"Optimization STOPPED! Moved to best scan position - Max: {self.best_scan_power:.1f} dBm @ {final_pos_str}")
+                        except Exception as e:
+                            self.status.config(text=f"Optimization STOPPED! Error moving to best position: {e}")
+                            print(f"[ERROR] Failed to move to best position: {e}")
+                    else:
+                        self.status.config(text="Combined optimization stopped - no data collected")
+                else:
+                    self.status.config(text="Hill climb completed - no data collected")
+            
+            # Capture screenshots for combined scan+hill climb
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir = os.path.join("log", f"scan_hillclimb_{timestamp}")
+            os.makedirs(log_dir, exist_ok=True)
+            
+            self.status.config(text="Capturing screenshots...")
+            self.root.update()
+            
+            # Capture Keysight web interface
+            capture_keysight_screenshot(log_dir, timestamp)
+            
+            # Capture GUI screenshot
+            capture_gui_screenshot(self.root, log_dir, timestamp)
+            
+            # Save combined results
+            self.save_combined_results(timestamp, log_dir)
+            
+            # Cleanup
+            p1.write("OUTP:STAT OFF")
+            p2.write("OUTP:STAT OFF")
+            sgl.write(":SOUR1:POW:STAT OFF")
+            p1.close(); p2.close(); sgl.close(); pwr.close(); ser.close()
+            
+            # Reset stop flag after successful completion
+            self.reset_stop_flag()
+            
+        except Exception as e:
+            self.status.config(text=f"[ERROR] Hill climbing failed: {e}")
+            messagebox.showerror("Hill Climbing Error", f"Hill climbing optimization failed: {e}")
+            print(f"[ERROR] Hill climbing failed: {e}")
+            
+            # Cleanup on error
+            try:
+                p1.write("OUTP:STAT OFF")
+                p2.write("OUTP:STAT OFF") 
+                sgl.write(":SOUR1:POW:STAT OFF")
+                p1.close(); p2.close(); sgl.close(); pwr.close(); ser.close()
+            except:
+                pass
+            finally:
+                # Always reset stop flag when optimization ends
+                self.reset_stop_flag()
+    
+    def save_combined_results(self, timestamp, log_dir):
+        """Save combined scan + hill climb results"""
+        with open(os.path.join(log_dir, f"combined_optimization_{timestamp}.csv"), "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Iteration", "Power (dBm)", "Axis"] + AXES)
+            for i, (pwr, color, pos) in enumerate(zip(self.powers, self.colors, self.positions)):
+                # Find axis from color
+                axis = [a for a, c in AXIS_COLORS.items() if c == color][0] if color in AXIS_COLORS.values() else 'Unknown'
+                writer.writerow([i, pwr, axis] + [pos[a] for a in AXES])
+        
+        self.fig.savefig(os.path.join(log_dir, f"combined_optimization_plot_{timestamp}.png"))
+        print(f"[INFO] Combined optimization results saved to {log_dir}/combined_optimization_{timestamp}.*")
     
     def save_scan_results(self, scan_data, enabled_axes, timestamp, log_dir):
         """Save brute force scan results"""
