@@ -612,19 +612,17 @@ class OptimizerApp:
         current_entry1.grid(row=1, column=1, padx=2, pady=2)
         self.pump1_entries['current'] = current_entry1
         
-        # Start, Stop, Steps
+        # Start, Stop, Steps - defaults will be set when reading current values
         start_entry1 = tk.Entry(pump1_frame, width=8)
-        start_entry1.insert(0, "10")  # Default start
         start_entry1.grid(row=1, column=2, padx=2, pady=2)
         self.pump1_entries['start'] = start_entry1
         
         stop_entry1 = tk.Entry(pump1_frame, width=8)
-        stop_entry1.insert(0, "70")  # Default stop
         stop_entry1.grid(row=1, column=3, padx=2, pady=2)
         self.pump1_entries['stop'] = stop_entry1
         
         steps_entry1 = tk.Entry(pump1_frame, width=8)
-        steps_entry1.insert(0, "10")  # Default steps
+        steps_entry1.insert(0, "5")  # Default steps
         steps_entry1.grid(row=1, column=4, padx=2, pady=2)
         self.pump1_entries['steps'] = steps_entry1
         
@@ -644,19 +642,17 @@ class OptimizerApp:
         current_entry2.grid(row=1, column=1, padx=2, pady=2)
         self.pump2_entries['current'] = current_entry2
         
-        # Start, Stop, Steps
+        # Start, Stop, Steps - defaults will be set when reading current values
         start_entry2 = tk.Entry(pump2_frame, width=8)
-        start_entry2.insert(0, "10")  # Default start
         start_entry2.grid(row=1, column=2, padx=2, pady=2)
         self.pump2_entries['start'] = start_entry2
         
         stop_entry2 = tk.Entry(pump2_frame, width=8)
-        stop_entry2.insert(0, "70")  # Default stop
         stop_entry2.grid(row=1, column=3, padx=2, pady=2)
         self.pump2_entries['stop'] = stop_entry2
         
         steps_entry2 = tk.Entry(pump2_frame, width=8)
-        steps_entry2.insert(0, "10")  # Default steps
+        steps_entry2.insert(0, "5")  # Default steps
         steps_entry2.grid(row=1, column=4, padx=2, pady=2)
         self.pump2_entries['steps'] = steps_entry2
         
@@ -677,19 +673,17 @@ class OptimizerApp:
         current_entry_signal.grid(row=1, column=1, padx=2, pady=2)
         self.signal_entries['current'] = current_entry_signal
         
-        # Start, Stop, Steps
+        # Start, Stop, Steps - defaults will be set when reading current values
         start_entry_signal = tk.Entry(signal_frame, width=8)
-        start_entry_signal.insert(0, "-10")  # Default start
         start_entry_signal.grid(row=1, column=2, padx=2, pady=2)
         self.signal_entries['start'] = start_entry_signal
         
         stop_entry_signal = tk.Entry(signal_frame, width=8)
-        stop_entry_signal.insert(0, "5")  # Default stop
         stop_entry_signal.grid(row=1, column=3, padx=2, pady=2)
         self.signal_entries['stop'] = stop_entry_signal
         
         steps_entry_signal = tk.Entry(signal_frame, width=8)
-        steps_entry_signal.insert(0, "10")  # Default steps
+        steps_entry_signal.insert(0, "5")  # Default steps
         steps_entry_signal.grid(row=1, column=4, padx=2, pady=2)
         self.signal_entries['steps'] = steps_entry_signal
     
@@ -730,7 +724,7 @@ class OptimizerApp:
             
             # Steps
             steps_entry = tk.Entry(axis_frame, width=8)
-            steps_entry.insert(0, "10")  # Default value
+            steps_entry.insert(0, "5")  # Default value
             steps_entry.grid(row=row, column=5, padx=2, pady=2)
             self.axis_entries[axis]['steps'] = steps_entry
     
@@ -755,9 +749,9 @@ class OptimizerApp:
                 
                 # Set default start/stop values if empty
                 if not self.axis_entries[axis]['start'].get():
-                    self.axis_entries[axis]['start'].insert(0, str(positions[axis] - 1000))
+                    self.axis_entries[axis]['start'].insert(0, str(positions[axis] - 100))
                 if not self.axis_entries[axis]['stop'].get():
-                    self.axis_entries[axis]['stop'].insert(0, str(positions[axis] + 1000))
+                    self.axis_entries[axis]['stop'].insert(0, str(positions[axis] + 100))
             
             self.status.config(text="Positions read successfully.")
             
@@ -784,6 +778,13 @@ class OptimizerApp:
                 entry1.delete(0, tk.END)
                 entry1.insert(0, f"{current1:.1f}")
                 entry1.config(state="readonly")
+                
+                # Set default start/stop values if empty
+                if not self.pump1_entries['start'].get():
+                    self.pump1_entries['start'].insert(0, f"{current1 - 100:.1f}")
+                if not self.pump1_entries['stop'].get():
+                    self.pump1_entries['stop'].insert(0, f"{current1 + 100:.1f}")
+                
                 p1.close()
             except Exception as e:
                 print(f"[ERROR] Failed to read Pump 1: {e}")
@@ -800,6 +801,13 @@ class OptimizerApp:
                 entry2.delete(0, tk.END)
                 entry2.insert(0, f"{current2:.1f}")
                 entry2.config(state="readonly")
+                
+                # Set default start/stop values if empty
+                if not self.pump2_entries['start'].get():
+                    self.pump2_entries['start'].insert(0, f"{current2 - 100:.1f}")
+                if not self.pump2_entries['stop'].get():
+                    self.pump2_entries['stop'].insert(0, f"{current2 + 100:.1f}")
+                
                 p2.close()
             except Exception as e:
                 print(f"[ERROR] Failed to read Pump 2: {e}")
@@ -816,6 +824,13 @@ class OptimizerApp:
                 entry_signal.delete(0, tk.END)
                 entry_signal.insert(0, f"{power:.1f}")
                 entry_signal.config(state="readonly")
+                
+                # Set default start/stop values if empty
+                if not self.signal_entries['start'].get():
+                    self.signal_entries['start'].insert(0, f"{power - 100:.1f}")
+                if not self.signal_entries['stop'].get():
+                    self.signal_entries['stop'].insert(0, f"{power + 100:.1f}")
+                
                 sgl.close()
             except Exception as e:
                 print(f"[ERROR] Failed to read Signal Laser: {e}")
