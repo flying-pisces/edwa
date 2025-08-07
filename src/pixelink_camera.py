@@ -14,8 +14,10 @@ from ctypes import *
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageEnhance, ImageFilter
 import cv2
+import json
+import math
 
 # Add pixelinkPythonWrapper to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'pixelinkPythonWrapper'))
@@ -65,6 +67,23 @@ class PixelinkCamera:
         self.image_format = PxLApi.ImageFormat.JPEG
         self.auto_exposure = True
         self.exposure_time = 10.0  # ms
+        self.gain = 0.0  # dB
+        self.brightness = 0.0
+        self.contrast = 1.0
+        self.saturation = 1.0
+        
+        # Analysis settings
+        self.roi_x = 0  # Region of Interest
+        self.roi_y = 0
+        self.roi_width = 0
+        self.roi_height = 0
+        
+        # Measurement triggers
+        self.trigger_mode = 'free_run'  # 'free_run', 'software', 'external'
+        self.measurement_data = {}
+        
+        # Analysis results storage
+        self.last_analysis = None
         
         # Capture settings
         self.save_directory = "camera_captures"

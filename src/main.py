@@ -25,7 +25,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# Camera integration
+# Enhanced Camera integration
 try:
     from camera_integration import (
         initialize_camera_system, capture_scan_start_image, capture_scan_optimum_image,
@@ -33,11 +33,14 @@ try:
         capture_scan_images_during_process, capture_optimization_sequence,
         cleanup_camera_system, camera_streaming
     )
+    from pixelink_camera_enhanced_basic import EnhancedPixelinkCamera, EnhancedCameraGUI
     CAMERA_AVAILABLE = True
-    print("[INFO] Camera integration loaded successfully")
+    ENHANCED_CAMERA_AVAILABLE = True
+    print("[INFO] Enhanced camera integration loaded successfully")
 except ImportError as e:
     CAMERA_AVAILABLE = False
-    print(f"[WARNING] Camera integration not available: {e}")
+    ENHANCED_CAMERA_AVAILABLE = False
+    print(f"[WARNING] Enhanced camera integration not available: {e}")
     # Define dummy functions
     def initialize_camera_system(*args, **kwargs): return True
     def capture_scan_start_image(*args, **kwargs): return None
@@ -948,6 +951,9 @@ class OptimizerApp:
         
         # Initialize camera system
         self.camera_enabled = tk.BooleanVar(value=CAMERA_AVAILABLE)
+        self.enhanced_camera = None
+        self.enhanced_camera_gui = None
+        
         if CAMERA_AVAILABLE:
             try:
                 initialize_camera_system(enable_camera=True)
@@ -955,6 +961,19 @@ class OptimizerApp:
             except Exception as e:
                 print(f"[WARNING] Camera system initialization failed: {e}")
                 self.camera_enabled.set(False)
+        
+        # Initialize enhanced camera if available
+        if ENHANCED_CAMERA_AVAILABLE:
+            try:
+                self.enhanced_camera = EnhancedPixelinkCamera()
+                if self.enhanced_camera.initialize():
+                    print("[INFO] Enhanced camera system initialized for EDWA")
+                else:
+                    print("[WARNING] Enhanced camera initialization failed")
+                    self.enhanced_camera = None
+            except Exception as e:
+                print(f"[WARNING] Enhanced camera system initialization failed: {e}")
+                self.enhanced_camera = None
         
         # Initialize axis variables
         for axis in AXES:
@@ -1005,12 +1024,11 @@ class OptimizerApp:
                                    bg="red", fg="white", font=("Arial", 14, "bold"), width=12, height=2)
         self.stop_button.pack(side=tk.LEFT, padx=10)
         
-        # Secondary utility buttons (smaller)
+        # Essential utility buttons (streamlined)
         utility_button_frame = tk.Frame(control_frame)
         utility_button_frame.pack(fill=tk.X, pady=10)
         
-        tk.Button(utility_button_frame, text="Screenshots", command=self.capture_screenshots, bg="yellow").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(utility_button_frame, text="Debug Power", command=self.debug_power_reading, bg="orange").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(utility_button_frame, text="Screenshots", command=self.capture_screenshots, bg="lightcyan", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
         
         # Status
         self.status = tk.Label(control_frame, text="Ready.", font=("Arial", 12), fg="blue")
@@ -1118,41 +1136,63 @@ class OptimizerApp:
         steps_entry_signal.grid(row=1, column=4, padx=2, pady=2)
         self.signal_entries['steps'] = steps_entry_signal
         
-        # Add Read Lasers button to laser section
+        # Streamlined laser controls
         laser_button_frame = tk.Frame(parent)
         laser_button_frame.pack(fill=tk.X, pady=5)
-        tk.Button(laser_button_frame, text="Read Current Laser Values", command=self.read_current_laser_values, 
-                 bg="lightcyan", font=("Arial", 10, "bold")).pack(anchor="w")
+        tk.Button(laser_button_frame, text="Read Laser Values", command=self.read_current_laser_values, 
+                 bg="lightblue", font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+        tk.Button(laser_button_frame, text="Reset Lasers", command=self.reset_laser_values, 
+                 bg="lightyellow", font=("Arial", 10), width=15).pack(side=tk.LEFT, padx=5)
         
         # Camera controls
         self.setup_camera_controls(parent)
     
     def setup_camera_controls(self, parent):
-        """Setup camera control UI section"""
-        camera_frame = tk.LabelFrame(parent, text="Top View Camera", font=("Arial", 11, "bold"), bg="#fff0e6")
+        """Setup enhanced camera control UI section"""
+        camera_frame = tk.LabelFrame(parent, text="Enhanced Top View Camera", font=("Arial", 11, "bold"), bg="#fff0e6")
         camera_frame.pack(fill=tk.X, pady=(0, 5))
         
-        # Camera enable checkbox
-        camera_enable_frame = tk.Frame(camera_frame, bg="#fff0e6")
-        camera_enable_frame.pack(fill=tk.X, padx=5, pady=2)
+        # Camera enable checkbox and status
+        camera_header_frame = tk.Frame(camera_frame, bg="#fff0e6")
+        camera_header_frame.pack(fill=tk.X, padx=5, pady=2)
         
-        tk.Checkbutton(camera_enable_frame, text="Enable Camera Capture", 
+        tk.Checkbutton(camera_header_frame, text="Enable Camera Capture", 
                       variable=self.camera_enabled, bg="#fff0e6", 
                       font=("Arial", 10, "bold")).pack(side=tk.LEFT)
         
-        # Camera status
-        self.camera_status = tk.Label(camera_frame, text="Camera Status: Ready" if CAMERA_AVAILABLE else "Camera Status: Not Available", 
+        # Enhanced status display
+        if ENHANCED_CAMERA_AVAILABLE and self.enhanced_camera:
+            status_text = "Enhanced Camera: Ready"
+            info = self.enhanced_camera.camera_info
+            if info:
+                status_text += f" ({info.get('model', 'Unknown')} - {info.get('serial', 'Unknown')})"
+        elif CAMERA_AVAILABLE:
+            status_text = "Basic Camera: Ready"
+        else:
+            status_text = "Camera: Not Available"
+            
+        self.camera_status = tk.Label(camera_frame, text=status_text, 
                                     bg="#fff0e6", font=("Arial", 9))
         self.camera_status.pack(fill=tk.X, padx=5, pady=2)
         
-        # Camera controls
+        # Basic camera controls
         camera_button_frame = tk.Frame(camera_frame, bg="#fff0e6")
         camera_button_frame.pack(fill=tk.X, padx=5, pady=2)
         
-        tk.Button(camera_button_frame, text="Test Capture", command=self.test_camera_capture, 
+        tk.Button(camera_button_frame, text="Test Capture", command=self.test_enhanced_camera_capture, 
                  bg="lightyellow", font=("Arial", 9), width=12).pack(side=tk.LEFT, padx=2)
-        tk.Button(camera_button_frame, text="Live Preview", command=self.open_camera_preview, 
+        tk.Button(camera_button_frame, text="Live Preview", command=self.open_enhanced_camera_preview, 
                  bg="lightblue", font=("Arial", 9), width=12).pack(side=tk.LEFT, padx=2)
+        tk.Button(camera_button_frame, text="Export Data", command=self.export_camera_data, 
+                 bg="lightgreen", font=("Arial", 9), width=12).pack(side=tk.LEFT, padx=2)
+        
+        # Enhanced camera controls (if available)
+        if ENHANCED_CAMERA_AVAILABLE and self.enhanced_camera:
+            try:
+                self.enhanced_camera_gui = EnhancedCameraGUI(camera_frame, self.enhanced_camera)
+                print("[INFO] Enhanced camera GUI integrated into main interface")
+            except Exception as e:
+                print(f"[WARNING] Failed to create enhanced camera GUI: {e}")
     
     def setup_axis_config(self, parent):
         """Setup DS102 axis configuration UI"""
@@ -1195,11 +1235,15 @@ class OptimizerApp:
             steps_entry.grid(row=row, column=5, padx=2, pady=2)
             self.axis_entries[axis]['steps'] = steps_entry
         
-        # Add Read Current Positions button to DS102 section
+        # Streamlined DS102 controls
         ds102_button_frame = tk.Frame(parent)
         ds102_button_frame.pack(fill=tk.X, pady=5)
-        tk.Button(ds102_button_frame, text="Read Current DS102 Positions", command=self.read_current_positions, 
-                 bg="lightgray", font=("Arial", 10, "bold")).pack(anchor="w")
+        tk.Button(ds102_button_frame, text="Read Positions", command=self.read_current_positions, 
+                 bg="lightgreen", font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+        tk.Button(ds102_button_frame, text="Reset Axes", command=self.reset_axis_values, 
+                 bg="lightcoral", font=("Arial", 10), width=15).pack(side=tk.LEFT, padx=5)
+        tk.Button(ds102_button_frame, text="Set Defaults", command=self.set_default_scan_range, 
+                 bg="lightyellow", font=("Arial", 10), width=15).pack(side=tk.LEFT, padx=5)
     
     def read_current_positions(self):
         """Read current positions from DS102"""
@@ -1315,6 +1359,79 @@ class OptimizerApp:
             self.status.config(text=f"Error reading laser values: {e}")
             messagebox.showerror("Error", f"Failed to read laser values: {e}")
     
+    def reset_laser_values(self):
+        """Reset laser control values to defaults"""
+        try:
+            # Reset pump 1 entries
+            self.pump1_entries['start'].delete(0, tk.END)
+            self.pump1_entries['stop'].delete(0, tk.END)
+            self.pump1_entries['steps'].delete(0, tk.END)
+            self.pump1_entries['steps'].insert(0, "5")
+            
+            # Reset pump 2 entries
+            self.pump2_entries['start'].delete(0, tk.END)
+            self.pump2_entries['stop'].delete(0, tk.END)
+            self.pump2_entries['steps'].delete(0, tk.END)
+            self.pump2_entries['steps'].insert(0, "5")
+            
+            # Reset signal entries
+            self.signal_entries['start'].delete(0, tk.END)
+            self.signal_entries['stop'].delete(0, tk.END)
+            self.signal_entries['steps'].delete(0, tk.END)
+            self.signal_entries['steps'].insert(0, "5")
+            
+            # Reset enabled states
+            self.pump1_enabled.set(False)
+            self.pump2_enabled.set(False)
+            self.signal_enabled.set(False)
+            
+            self.status.config(text="Laser values reset to defaults")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reset laser values: {e}")
+    
+    def reset_axis_values(self):
+        """Reset DS102 axis values to defaults"""
+        try:
+            for axis in AXES:
+                self.axis_entries[axis]['start'].delete(0, tk.END)
+                self.axis_entries[axis]['stop'].delete(0, tk.END)
+                self.axis_entries[axis]['steps'].delete(0, tk.END)
+                self.axis_entries[axis]['steps'].insert(0, "5")
+                self.axis_enabled[axis].set(False)
+            
+            self.status.config(text="DS102 axis values reset to defaults")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reset axis values: {e}")
+    
+    def set_default_scan_range(self):
+        """Set default scan ranges for common optimization"""
+        try:
+            # Enable X, Y, Z axes with default ranges
+            default_ranges = {
+                'X': (-100, 100, True),
+                'Y': (-100, 100, True), 
+                'Z': (-100, 100, True),
+                'U': (-50, 50, False),
+                'V': (-50, 50, False),
+                'W': (-50, 50, False)
+            }
+            
+            for axis, (start, stop, enabled) in default_ranges.items():
+                self.axis_entries[axis]['start'].delete(0, tk.END)
+                self.axis_entries[axis]['start'].insert(0, str(start))
+                self.axis_entries[axis]['stop'].delete(0, tk.END)
+                self.axis_entries[axis]['stop'].insert(0, str(stop))
+                self.axis_entries[axis]['steps'].delete(0, tk.END)
+                self.axis_entries[axis]['steps'].insert(0, "5")
+                self.axis_enabled[axis].set(enabled)
+            
+            self.status.config(text="Default scan range set (X,Y,Z enabled ±100)")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set default ranges: {e}")
+    
     def test_camera_capture(self):
         """Test camera capture functionality"""
         try:
@@ -1339,8 +1456,100 @@ class OptimizerApp:
             self.camera_status.config(text="Camera Status: Error")
             messagebox.showerror("Camera Error", f"Camera test failed: {e}")
     
+    def test_enhanced_camera_capture(self):
+        """Test enhanced camera capture functionality"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+            
+            if self.enhanced_camera:
+                self.camera_status.config(text="Enhanced Camera: Capturing...")
+                self.root.update()
+                
+                # Get current DS102 position for measurement-triggered capture
+                try:
+                    ser = serial.Serial(STAGE_PORT, BAUDRATE, timeout=1)
+                    current_position = get_all_positions(ser)
+                    power_reading = 85.0  # Mock power reading for test
+                    
+                    filepath, metadata = self.enhanced_camera.create_measurement_triggered_capture(
+                        current_position, power_reading, "test_capture")
+                    
+                    if filepath:
+                        self.camera_status.config(text=f"Enhanced Camera: Captured {os.path.basename(filepath)}")
+                        if self.enhanced_camera_gui:
+                            self.enhanced_camera_gui.update_status(f"Test capture successful")
+                        messagebox.showinfo("Camera", f"Enhanced capture successful!\\nFile: {os.path.basename(filepath)}")
+                    else:
+                        self.camera_status.config(text="Enhanced Camera: Test capture failed")
+                        messagebox.showerror("Camera", "Enhanced capture failed")
+                    
+                    ser.close()
+                    
+                except Exception as e:
+                    # Fallback to simple capture if position reading fails
+                    filepath = self.enhanced_camera.capture_image()
+                    if filepath:
+                        self.camera_status.config(text=f"Enhanced Camera: Captured {os.path.basename(filepath)}")
+                        messagebox.showinfo("Camera", f"Basic capture successful!\\nFile: {os.path.basename(filepath)}")
+                    else:
+                        self.camera_status.config(text="Enhanced Camera: Test capture failed")
+                        messagebox.showerror("Camera", "Camera capture failed")
+            else:
+                # Fallback to original camera test
+                self.test_camera_capture()
+                
+        except Exception as e:
+            self.camera_status.config(text="Enhanced Camera: Error")
+            messagebox.showerror("Camera Error", f"Enhanced camera test failed: {e}")
+    
+    def open_enhanced_camera_preview(self):
+        """Open enhanced camera preview window"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+            
+            if self.enhanced_camera:
+                from pixelink_camera_enhanced_basic import EnhancedCameraPreviewWindow
+                
+                preview = EnhancedCameraPreviewWindow(self.enhanced_camera)
+                preview.start_preview()
+                messagebox.showinfo("Camera", "Enhanced preview window opened")
+            else:
+                # Fallback to original preview
+                self.open_camera_preview()
+                
+        except Exception as e:
+            messagebox.showerror("Camera Error", f"Enhanced preview failed: {e}")
+    
+    def export_camera_data(self):
+        """Export camera measurement data"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+            
+            if self.enhanced_camera:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filepath = f"edwa_camera_data_{timestamp}.json"
+                
+                if self.enhanced_camera.export_measurement_data(filepath):
+                    self.camera_status.config(text=f"Enhanced Camera: Data exported")
+                    if self.enhanced_camera_gui:
+                        self.enhanced_camera_gui.update_status(f"Data exported: {filepath}")
+                    messagebox.showinfo("Camera", f"Measurement data exported!\\nFile: {filepath}")
+                else:
+                    messagebox.showerror("Camera", "Data export failed")
+            else:
+                messagebox.showinfo("Camera", "Enhanced camera not available for data export")
+                
+        except Exception as e:
+            messagebox.showerror("Camera Error", f"Data export failed: {e}")
+    
     def open_camera_preview(self):
-        """Open camera preview window"""
+        """Open camera preview window (fallback)"""
         try:
             if not self.camera_enabled.get():
                 messagebox.showinfo("Camera", "Camera is disabled")

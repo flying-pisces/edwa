@@ -19,20 +19,20 @@ def main():
         
         print("1. Importing PixeLINK...")
         from pixelinkWrapper import PxLApi
-        print("   ✓ Import successful")
+        print("   [OK] Import successful")
         
         print("2. Checking API attributes...")
         if hasattr(PxLApi, '_Api'):
-            print("   ✓ API object found")
+            print("   [OK] API object found")
         else:
-            print("   ⚠ API object not found")
+            print("   [WARNING] API object not found")
         
         print("3. Testing camera initialization...")
         ret = PxLApi.initialize(0)
         
         if PxLApi.apiSuccess(ret[0]):
             h_camera = ret[1]
-            print(f"   ✓ Camera initialized (handle: {h_camera})")
+            print(f"   [OK] Camera initialized (handle: {h_camera})")
             
             print("4. Testing camera capabilities...")
             try:
@@ -40,33 +40,33 @@ def main():
                 num_ret = PxLApi.getNumberCameras()
                 if PxLApi.apiSuccess(num_ret[0]):
                     num_cameras = num_ret[1]
-                    print(f"   ✓ Number of cameras detected: {num_cameras}")
+                    print(f"   [OK] Number of cameras detected: {num_cameras}")
                 else:
-                    print("   ⚠ Could not get camera count")
+                    print("   [WARNING] Could not get camera count")
             except:
-                print("   ⚠ Camera count check failed")
+                print("   [WARNING] Camera count check failed")
             
             print("5. Cleaning up...")
             PxLApi.uninitialize(h_camera)
-            print("   ✓ Camera cleaned up")
+            print("   [OK] Camera cleaned up")
             
-            print("\n🎉 SUCCESS: Camera is fully functional!")
+            print("\n*** SUCCESS: Camera is fully functional! ***")
             return True
             
         else:
-            print(f"   ⚠ Camera initialization failed (code: {ret[0]})")
+            print(f"   [WARNING] Camera initialization failed (code: {ret[0]})")
             print("   This usually means no camera is connected")
             print("   But the software is working correctly!")
-            print("\n✅ SUCCESS: Software is ready, camera hardware not connected")
+            print("\n*** SUCCESS: Software is ready, camera hardware not connected ***")
             return True
             
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\n*** ERROR: {e} ***")
         
         # Provide specific guidance based on error type
         error_str = str(e).lower()
         if "no module named" in error_str:
-            print("\nTROUBLESHOoting:")
+            print("\nTROUBLESHOOTING:")
             print("- PixeLINK wrapper files may be missing")
             print("- Check that pixelinkPythonWrapper folder exists")
         elif "dll" in error_str or "library" in error_str:
