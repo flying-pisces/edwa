@@ -1370,17 +1370,21 @@ class OptimizerApp:
         self.powers.append(power)
         
         # Handle special markers and axis combinations
-        if axis == 'START':
-            self.colors.append('red')  # Red for starting position
-        elif axis == 'LOCAL':
-            self.colors.append('orange')  # Orange for local scanning
-        elif len(axis) == 2 and axis[0] in AXES and axis[1] in AXES:
-            # 2D cross-scan combinations (e.g. 'XY', 'ZU')
-            self.colors.append('purple')  # Purple for 2D cross-scans
-        elif axis in AXES:
-            self.colors.append(AXIS_COLORS[axis])  # Normal axis colors
-        else:
-            self.colors.append('gray')  # Default for unknown
+        try:
+            if axis == 'START':
+                self.colors.append('red')  # Red for starting position
+            elif axis == 'LOCAL':
+                self.colors.append('orange')  # Orange for local scanning
+            elif len(axis) == 2 and axis[0] in AXES and axis[1] in AXES:
+                # 2D cross-scan combinations (e.g. 'XY', 'ZU', 'VW')
+                self.colors.append('purple')  # Purple for 2D cross-scans
+            elif axis in AXES:
+                self.colors.append(AXIS_COLORS[axis])  # Normal axis colors
+            else:
+                self.colors.append('gray')  # Default for unknown: {axis}
+        except Exception as e:
+            print(f"[ERROR] update_plot axis handling failed for axis '{axis}': {e}")
+            self.colors.append('gray')  # Fallback color
             
         self.positions.append(position.copy())
         self.ax.clear()
@@ -1888,29 +1892,59 @@ class OptimizerApp:
             self.status.config(text="Moving to optimal position for hill climbing...")
             self.root.update()
             
-            # Move to the best position found during scan
+            # Move to the best position found during scan with verification
+            best_pos_str = ', '.join([f"{a}:{best_position[a]:.0f}" for a in AXES])
+            print(f"[HILLCLIMB SETUP] Moving to scan optimum: {best_pos_str}")
+            print(f"[HILLCLIMB SETUP] Expected power: {self.best_scan_power:.1f} dBm")
+            
             for axis in AXES:
                 target_pos = best_position[axis]
+                current_pos_axis = get_current_position(ser, axis) if 'get_current_position' in globals() else 'unknown'
+                print(f"[HILLCLIMB SETUP] {axis}: {current_pos_axis} → {target_pos}")
                 move_axis_to(ser, axis, target_pos)
                 time.sleep(0.1)  # Small delay between moves
             
             # Wait for all movements to complete
-            time.sleep(2)
+            print("[HILLCLIMB SETUP] Waiting for movements to complete...")
+            time.sleep(3)  # Increased wait time
             
-            # Verify position
+            # Verify position and power
             current_pos = get_all_positions(ser)
             pos_str = ', '.join([f"{a}:{current_pos[a]:.0f}" for a in AXES])
-            self.status.config(text=f"Positioned at: {pos_str}. Starting hill climbing on all 6 axes...")
+            
+            # Critical: Verify we're actually at the scan optimum
+            actual_power = read_power(pwr)
+            power_diff = abs(actual_power - self.best_scan_power) if actual_power is not None else float('inf')
+            
+            print(f"[HILLCLIMB SETUP] Final position: {pos_str}")
+            print(f"[HILLCLIMB SETUP] Actual power: {actual_power:.1f} dBm (expected: {self.best_scan_power:.1f} dBm, diff: {power_diff:.1f} dBm)")
+            
+            if actual_power is not None and power_diff > 2.0:
+                print(f"[WARNING] DS102 positioning failed! Expected {self.best_scan_power:.1f} dBm but got {actual_power:.1f} dBm")
+                self.status.config(text=f"WARNING: DS102 may not be at scan optimum - Expected: {self.best_scan_power:.1f} dBm, Actual: {actual_power:.1f} dBm")
+                # Update the baseline to actual position for hill climbing
+                self.global_best_power = actual_power
+                self.best_scan_power = actual_power
+                print(f"[HILLCLIMB SETUP] Updated baseline to actual power: {actual_power:.1f} dBm")
+            else:
+                print(f"[HILLCLIMB SETUP] DS102 successfully positioned at scan optimum!")
+                self.status.config(text=f"Positioned at scan optimum: {actual_power:.1f} dBm @ {pos_str}")
+            
             self.root.update()
             
             # Clear previous plotting data for hill climbing phase
             self.iterations, self.powers, self.colors, self.positions = [], [], [], []
             
-            # Add starting position to hill climbing plot data
-            starting_power = read_power(pwr)
-            if starting_power is not None:
-                self.update_plot(-1, starting_power, 'START', current_pos.copy())  # Special iteration -1 for start
-                print(f"[HILLCLIMB] Starting position recorded: {starting_power:.1f} dBm")
+            # Add starting position to hill climbing plot data using verified power
+            if actual_power is not None:
+                self.update_plot(-1, actual_power, 'START', current_pos.copy())  # Special iteration -1 for start
+                print(f"[HILLCLIMB] Starting position recorded: {actual_power:.1f} dBm (scan baseline)")
+            else:
+                # Fallback: read power again
+                starting_power = read_power(pwr)
+                if starting_power is not None:
+                    self.update_plot(-1, starting_power, 'START', current_pos.copy())
+                    print(f"[HILLCLIMB] Starting position recorded: {starting_power:.1f} dBm (fallback)")
             
             # SMART HILL CLIMBING: Limited to ≤400 tests total
             self.status.config(text="Phase 1: Smart 1D axis scans around maximum (±50 range)...")
