@@ -1204,7 +1204,7 @@ class OptimizerApp:
             self.root.update()
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_dir = os.path.join("log", f"manual_screenshots_{timestamp}")
+            log_dir = os.path.join("..", "log", f"manual_screenshots_{timestamp}")
             os.makedirs(log_dir, exist_ok=True)
             
             # Capture Keysight web interface
@@ -1439,7 +1439,7 @@ class OptimizerApp:
             
             # Generate and save heatmaps
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_dir = os.path.join("log", f"scan_{timestamp}")
+            log_dir = os.path.join("..", "log", f"scan_{timestamp}")
             os.makedirs(log_dir, exist_ok=True)
             
             generate_heatmaps(scan_data, enabled_axes, timestamp, log_dir)
@@ -1530,12 +1530,14 @@ class OptimizerApp:
                     continue_dialog = False  # Don't continue if stopped
                 
                 if continue_dialog:
-                    # Store best position for hill climbing
+                    # Store best position for hill climbing and initialize global tracking
                     self.best_scan_position = best_pos
                     self.best_scan_power = best_power
+                    self.global_best_position = best_pos.copy()
+                    self.global_best_power = best_power
                     
-                    # Don't cleanup instruments yet - pass them to hill climbing
-                    self.continue_with_hill_climbing(p1, p2, sgl, pwr, ser, best_pos)
+                    # Don't cleanup instruments yet - pass them to hill climbing with scan log directory
+                    self.continue_with_hill_climbing(p1, p2, sgl, pwr, ser, best_pos, log_dir)
                     return
                 else:
                     self.status.config(text="Scan completed - Hill climbing skipped")
@@ -1712,7 +1714,7 @@ class OptimizerApp:
 
             # Capture screenshots for hill climb
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_dir = "log"
+            log_dir = os.path.join("..", "log", f"hillclimb_{timestamp}")
             os.makedirs(log_dir, exist_ok=True)
             
             self.status.config(text="Capturing screenshots...")
@@ -1724,7 +1726,7 @@ class OptimizerApp:
             # Capture GUI screenshot
             capture_gui_screenshot(self.root, log_dir, timestamp)
             
-            self.save_results()
+            self.save_results(log_dir)
 
             # Cleanup
             p1.write("OUTP:STAT OFF")
@@ -1740,21 +1742,27 @@ class OptimizerApp:
             # Always reset stop flag when optimization ends
             self.reset_stop_flag()
 
-    def save_results(self):
-        """Save hill climb results"""
-        os.makedirs("log", exist_ok=True)
+    def save_results(self, log_dir=None):
+        """Save hill climb results to specified directory or default location"""
+        if log_dir is None:
+            log_dir = os.path.join("..", "log")
+            os.makedirs(log_dir, exist_ok=True)
+        
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(f"log/climb_hill_{ts}.csv", "w", newline="") as f:
+        csv_path = os.path.join(log_dir, f"climb_hill_{ts}.csv")
+        plot_path = os.path.join(log_dir, f"climb_hill_plot_{ts}.png")
+        
+        with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Iteration", "Power (dBm)", "Axis"] + AXES)
             for i, (pwr, color, pos) in enumerate(zip(self.powers, self.colors, self.positions)):
                 # Find axis from color
                 axis = [a for a, c in AXIS_COLORS.items() if c == color][0] if color in AXIS_COLORS.values() else 'Unknown'
                 writer.writerow([i, pwr, axis] + [pos[a] for a in AXES])
-        self.fig.savefig(f"log/climb_hill_plot_{ts}.png")
-        print(f"[INFO] Hill climb results saved to log/climb_hill_{ts}.*")
+        self.fig.savefig(plot_path)
+        print(f"[INFO] Hill climb results saved to {csv_path} and {plot_path}")
     
-    def continue_with_hill_climbing(self, p1, p2, sgl, pwr, ser, best_position):
+    def continue_with_hill_climbing(self, p1, p2, sgl, pwr, ser, best_position, scan_log_dir):
         """Continue with hill climbing from the best scan position"""
         try:
             self.status.config(text="Moving to optimal position for hill climbing...")
@@ -1793,6 +1801,13 @@ class OptimizerApp:
             for axis, pos, pwrval in random_walk(pwr, ser, position, RANDOM_STEPS, INITIAL_STEP, check_stop):
                 self.update_plot(i, pwrval, axis, pos)
                 i += 1
+                
+                # Update global best if this is better than scan result
+                if pwrval > self.global_best_power:
+                    self.global_best_power = pwrval
+                    self.global_best_position = pos.copy()
+                    print(f"[GLOBAL] New best power: {pwrval:.1f} dBm (improvement over scan: +{pwrval - self.best_scan_power:.1f} dBm)")
+                
                 self.root.update()
                 
                 # Check if stopped during random walk
@@ -1808,94 +1823,74 @@ class OptimizerApp:
                 for axis, pos, pwrval in hill_climb_all_axes(pwr, ser, position, INITIAL_STEP, check_stop):
                     self.update_plot(i, pwrval, axis, pos)
                     i += 1
+                    
+                    # Update global best if this is better than scan result
+                    if pwrval > self.global_best_power:
+                        self.global_best_power = pwrval
+                        self.global_best_position = pos.copy()
+                        print(f"[GLOBAL] New best power: {pwrval:.1f} dBm (improvement over scan: +{pwrval - self.best_scan_power:.1f} dBm)")
+                    
                     self.root.update()
                     
                     # Check if stopped during hill climbing
                     if self.stop_requested:
                         break
             
-            # Display final results and handle positioning
-            if self.powers:
-                max_idx = np.argmax(self.powers)
-                best = self.powers[max_idx]
-                best_position = self.positions[max_idx]
-                pos_str = ', '.join([f"{a}:{best_position[a]:.0f}" for a in AXES])
-                
-                if self.stop_requested:
-                    # Move DS102 to the best position found during combined optimization
-                    self.status.config(text="STOPPED - Moving to best position found...")
-                    self.root.update()
-                    
-                    try:
-                        for axis in AXES:
-                            target_pos = best_position[axis]
-                            move_axis_to(ser, axis, target_pos)
-                        
-                        # Wait for positioning to complete
-                        time.sleep(1)
-                        
-                        # Verify final position
-                        final_pos = get_all_positions(ser)
-                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
-                        
-                        self.status.config(text=f"Combined optimization STOPPED! Moved to best position - Max: {best:.1f} dBm @ {final_pos_str}")
-                    except Exception as e:
-                        self.status.config(text=f"Combined optimization STOPPED! Error moving to best position: {e}")
-                        print(f"[ERROR] Failed to move to best position: {e}")
-                else:
-                    # Ensure DS102 is at the best position found during combined optimization
-                    self.status.config(text="Combined optimization complete - Verifying best position...")
-                    self.root.update()
-                    
-                    try:
-                        # Move to the best position to ensure we're there
-                        for axis in AXES:
-                            target_pos = best_position[axis]
-                            move_axis_to(ser, axis, target_pos)
-                        
-                        # Wait for positioning to complete
-                        time.sleep(0.5)
-                        
-                        # Verify final position
-                        final_pos = get_all_positions(ser)
-                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
-                        
-                        self.status.config(text=f"Combined optimization complete! At best position - Max: {best:.1f} dBm @ {final_pos_str}")
-                    except Exception as e:
-                        self.status.config(text=f"Combined optimization complete! Error moving to best position: {e}")
-                        print(f"[ERROR] Failed to move to best position: {e}")
-            else:
-                if self.stop_requested:
-                    # If no hill climbing data but scan found best position, move there
-                    if hasattr(self, 'best_scan_position') and hasattr(self, 'best_scan_power'):
-                        self.status.config(text="STOPPED - Moving to best scan position...")
-                        self.root.update()
-                        
-                        try:
-                            for axis in AXES:
-                                target_pos = self.best_scan_position[axis]
-                                move_axis_to(ser, axis, target_pos)
-                            
-                            # Wait for positioning to complete
-                            time.sleep(1)
-                            
-                            # Verify final position
-                            final_pos = get_all_positions(ser)
-                            final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
-                            
-                            self.status.config(text=f"Optimization STOPPED! Moved to best scan position - Max: {self.best_scan_power:.1f} dBm @ {final_pos_str}")
-                        except Exception as e:
-                            self.status.config(text=f"Optimization STOPPED! Error moving to best position: {e}")
-                            print(f"[ERROR] Failed to move to best position: {e}")
-                    else:
-                        self.status.config(text="Combined optimization stopped - no data collected")
-                else:
-                    self.status.config(text="Hill climb completed - no data collected")
+            # Display final results and handle positioning using GLOBAL best (scan + hill climbing)
+            # Use the global best which considers both scan and hill climbing results
+            best = self.global_best_power
+            best_position = self.global_best_position
+            pos_str = ', '.join([f"{a}:{best_position[a]:.0f}" for a in AXES])
             
-            # Capture screenshots for combined scan+hill climb
+            print(f"[FINAL] Global best: {best:.1f} dBm at {pos_str} (scan baseline was {self.best_scan_power:.1f} dBm)")
+            
+            if self.stop_requested:
+                # Move DS102 to the best position found during combined optimization
+                self.status.config(text="STOPPED - Moving to best position found...")
+                self.root.update()
+                
+                try:
+                    for axis in AXES:
+                        target_pos = best_position[axis]
+                        move_axis_to(ser, axis, target_pos)
+                    
+                    # Wait for positioning to complete
+                    time.sleep(1)
+                    
+                    # Verify final position
+                    final_pos = get_all_positions(ser)
+                    final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                    
+                    self.status.config(text=f"Combined optimization STOPPED! Moved to best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                except Exception as e:
+                    self.status.config(text=f"Combined optimization STOPPED! Error moving to best position: {e}")
+                    print(f"[ERROR] Failed to move to best position: {e}")
+            else:
+                # Ensure DS102 is at the best position found during combined optimization
+                self.status.config(text="Combined optimization complete - Verifying best position...")
+                self.root.update()
+                
+                try:
+                    # Move to the best position to ensure we're there
+                    for axis in AXES:
+                        target_pos = best_position[axis]
+                        move_axis_to(ser, axis, target_pos)
+                    
+                    # Wait for positioning to complete
+                    time.sleep(0.5)
+                    
+                    # Verify final position
+                    final_pos = get_all_positions(ser)
+                    final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
+                    
+                    self.status.config(text=f"Combined optimization complete! At best position - Max: {best:.1f} dBm @ {final_pos_str}")
+                except Exception as e:
+                    self.status.config(text=f"Combined optimization complete! Error moving to best position: {e}")
+                    print(f"[ERROR] Failed to move to best position: {e}")
+            
+            # Use the same log directory as the scan for combined results
+            log_dir = scan_log_dir
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_dir = os.path.join("log", f"scan_hillclimb_{timestamp}")
-            os.makedirs(log_dir, exist_ok=True)
             
             self.status.config(text="Capturing screenshots...")
             self.root.update()
@@ -1906,7 +1901,7 @@ class OptimizerApp:
             # Capture GUI screenshot
             capture_gui_screenshot(self.root, log_dir, timestamp)
             
-            # Save combined results
+            # Save combined results in the scan log directory
             self.save_combined_results(timestamp, log_dir)
             
             # Cleanup
