@@ -1,0 +1,3 @@
+PixeLINK Comprehensive Diagnostic Tool
+==================================================
+=== PixeLINK SDK Installation Check ===
