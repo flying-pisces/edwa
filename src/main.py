@@ -1369,9 +1369,11 @@ class OptimizerApp:
         self.iterations.append(iteration)
         self.powers.append(power)
         
-        # Handle special starting position marker
+        # Handle special markers
         if axis == 'START':
             self.colors.append('red')  # Red for starting position
+        elif axis == 'LOCAL':
+            self.colors.append('orange')  # Orange for local scanning
         else:
             self.colors.append(AXIS_COLORS[axis])
             
@@ -1496,7 +1498,11 @@ class OptimizerApp:
             
             # Process data for plotting
             for i, point in enumerate(scan_data):
-                self.update_plot(i, point['power'], enabled_axes[0], point['position'])
+                # Handle starting position with special marker
+                if point.get('is_starting_position', False):
+                    self.update_plot(point['index'], point['power'], 'START', point['position'])
+                else:
+                    self.update_plot(i, point['power'], enabled_axes[0], point['position'])
             
             # Generate and save heatmaps
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1853,8 +1859,8 @@ class OptimizerApp:
                 self.update_plot(-1, starting_power, 'START', current_pos.copy())  # Special iteration -1 for start
                 print(f"[HILLCLIMB] Starting position recorded: {starting_power:.1f} dBm")
             
-            # Perform random walk + hill climbing on ALL 6 axes
-            self.status.config(text="Phase 1: Random walk exploration...")
+            # Perform local scanning around the global maximum with ±50 range
+            self.status.config(text="Phase 1: Local scanning around global maximum (±50 range)...")
             self.root.update()
             
             i = 0
@@ -1864,30 +1870,59 @@ class OptimizerApp:
             def check_stop():
                 return self.stop_requested
             
-            # Random walk on ALL axes
-            for axis, pos, pwrval in random_walk(pwr, ser, position, RANDOM_STEPS, INITIAL_STEP, check_stop):
-                self.update_plot(i, pwrval, axis, pos)
-                i += 1
-                
-                # Update global best if this is better than scan result
-                if pwrval > self.global_best_power:
-                    self.global_best_power = pwrval
-                    self.global_best_position = pos.copy()
-                    print(f"[GLOBAL] New best power: {pwrval:.1f} dBm (improvement over scan: +{pwrval - self.best_scan_power:.1f} dBm)")
-                
-                self.root.update()
-                
-                # Check if stopped during random walk
-                if self.stop_requested:
-                    break
+            # Create local scan parameters around the current position (global maximum from scan)
+            local_scan_params = {}
+            scan_range = 50  # ±50 range
+            scan_steps = 11  # 11 points gives us steps of 10 units each
             
-            # Hill climb on ALL axes (only if not stopped)
-            if not self.stop_requested:
-                self.status.config(text="Phase 2: Hill climb optimization on all 6 axes...")
+            for axis in AXES:
+                center = position[axis]
+                start = center - scan_range
+                stop = center + scan_range
+                local_scan_params[axis] = np.linspace(start, stop, scan_steps)
+                print(f"[LOCAL SCAN] {axis}: {start:.0f} to {stop:.0f} ({scan_steps} points)")
+            
+            # Progress callback for local scan
+            def update_local_progress(current, total):
+                self.status.config(text=f"Local scanning: {current}/{total} ({100*current/total:.1f}%)")
+                self.root.update()
+            
+            # Perform local 6D scan around the global maximum
+            local_scan_data = brute_force_3d_scan(pwr, ser, local_scan_params, position, update_local_progress, check_stop)
+            
+            # Process local scan data for plotting
+            for point in local_scan_data:
+                if not point.get('is_starting_position', False):  # Skip the starting position as it's already plotted
+                    self.update_plot(i, point['power'], 'LOCAL', point['position'])
+                    i += 1
+                    
+                    # Update global best if this is better than scan result
+                    if point['power'] > self.global_best_power:
+                        self.global_best_power = point['power']
+                        self.global_best_position = point['position'].copy()
+                        print(f"[GLOBAL] New best from local scan: {point['power']:.1f} dBm (improvement: +{point['power'] - self.best_scan_power:.1f} dBm)")
+                    
+                    self.root.update()
+                    
+                    # Check if stopped during local scan
+                    if self.stop_requested:
+                        break
+            
+            # Additional fine hill climbing (only if not stopped)
+            if not self.stop_requested and len(local_scan_data) > 1:
+                self.status.config(text="Phase 2: Fine hill climbing optimization...")
                 self.root.update()
                 
-                # Modified hill climbing to work on all axes
-                for axis, pos, pwrval in hill_climb_all_axes(pwr, ser, position, INITIAL_STEP, check_stop):
+                # Move to the best position found in local scan
+                if self.global_best_position != position:
+                    for axis in AXES:
+                        if abs(self.global_best_position[axis] - position[axis]) > 0.1:
+                            move_axis_to(ser, axis, self.global_best_position[axis])
+                    position = self.global_best_position.copy()
+                    time.sleep(0.5)
+                
+                # Fine hill climbing with smaller steps
+                for axis, pos, pwrval in hill_climb_all_axes_constrained(pwr, ser, position, 5, check_stop):  # Step size 5
                     self.update_plot(i, pwrval, axis, pos)
                     i += 1
                     
@@ -1895,7 +1930,7 @@ class OptimizerApp:
                     if pwrval > self.global_best_power:
                         self.global_best_power = pwrval
                         self.global_best_position = pos.copy()
-                        print(f"[GLOBAL] New best power: {pwrval:.1f} dBm (improvement over scan: +{pwrval - self.best_scan_power:.1f} dBm)")
+                        print(f"[GLOBAL] New best from fine climbing: {pwrval:.1f} dBm (improvement: +{pwrval - self.best_scan_power:.1f} dBm)")
                     
                     self.root.update()
                     
