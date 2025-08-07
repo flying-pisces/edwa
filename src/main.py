@@ -1404,8 +1404,27 @@ class OptimizerApp:
         
         # Highlight the current point (if not starting position)
         if len(self.iterations) > 0 and iteration != -1:
-            self.ax.scatter([iteration], [power], c=[AXIS_COLORS[axis]], s=100, 
-                          marker='o', edgecolor='black', linewidth=2, label=f'Current: {axis}')
+            try:
+                # Determine highlight color based on axis type
+                if axis == 'START':
+                    highlight_color = 'red'
+                elif axis == 'LOCAL':
+                    highlight_color = 'orange'
+                elif len(axis) == 2 and axis[0] in AXES and axis[1] in AXES:
+                    # 2D cross-scan combinations (e.g. 'XY', 'ZU', 'VW')
+                    highlight_color = 'purple'
+                elif axis in AXES:
+                    highlight_color = AXIS_COLORS[axis]
+                else:
+                    highlight_color = 'gray'
+                    
+                self.ax.scatter([iteration], [power], c=[highlight_color], s=100, 
+                              marker='o', edgecolor='black', linewidth=2, label=f'Current: {axis}')
+            except Exception as e:
+                print(f"[ERROR] Failed to highlight current point for axis '{axis}': {e}")
+                # Fallback highlighting with gray color
+                self.ax.scatter([iteration], [power], c=['gray'], s=100, 
+                              marker='o', edgecolor='black', linewidth=2, label=f'Current: {axis}')
         
         # Add legend showing axis colors
         legend_elements = []
