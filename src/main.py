@@ -681,6 +681,18 @@ def brute_force_3d_scan(inst, ser, scan_params, origin_positions, progress_callb
     if not axes:
         return scan_data
     
+    # Always include the starting position as the first data point
+    starting_power = read_power(inst, debug=True)
+    if starting_power is not None:
+        starting_point = {
+            'position': origin_positions.copy(),
+            'power': starting_power,
+            'index': -1,  # Special index to identify starting position
+            'is_starting_position': True
+        }
+        scan_data.append(starting_point)
+        print(f"[SCAN] Starting position recorded: {starting_power:.1f} dBm at {', '.join([f'{a}:{origin_positions[a]:.0f}' for a in ['X','Y','Z','U','V','W']])}")
+    
     # Create full 3D grid for enabled axes
     grids = [scan_params[ax] for ax in axes]
     
@@ -736,9 +748,18 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
     if not scan_data or not axes:
         return
     
-    # Extract data
+    # Extract data and identify starting position
     positions = np.array([[point['position'][ax] for ax in axes] for point in scan_data])
     powers = np.array([point['power'] for point in scan_data])
+    
+    # Find starting position if it exists
+    starting_idx = None
+    starting_position = None
+    for i, point in enumerate(scan_data):
+        if point.get('is_starting_position', False):
+            starting_idx = i
+            starting_position = [point['position'][ax] for ax in axes]
+            break
     
     # Find peak power and position for title
     max_idx = np.argmax(powers)
@@ -755,6 +776,13 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
         # 1D plot
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(positions[:, 0], powers, 'b-o', markersize=4)
+        
+        # Mark starting position with large star if it exists
+        if starting_idx is not None and starting_position is not None:
+            ax.plot(starting_position[0], powers[starting_idx], 'r*', markersize=15, 
+                   label=f'Starting Position: {powers[starting_idx]:.1f} dBm')
+            ax.legend()
+        
         ax.set_xlabel(f'{axes[0]} Position')
         ax.set_ylabel('Power (dBm)')
         ax.set_title(f'1D Scan - {axes[0]} vs Power\nPeak: {peak_power:.1f} dBm at [{position_str}]')
@@ -791,6 +819,13 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
         # Add scatter points
         ax.scatter(positions[:, 0], positions[:, 1], c=powers, s=20, cmap='viridis', alpha=0.7, edgecolors='white', linewidth=0.5)
         
+        # Mark starting position with large red star if it exists
+        if starting_idx is not None and starting_position is not None:
+            ax.plot(starting_position[0], starting_position[1], 'r*', markersize=20, 
+                   label=f'Starting Position: {powers[starting_idx]:.1f} dBm', 
+                   markeredgecolor='white', markeredgewidth=1)
+            ax.legend(loc='upper left', bbox_to_anchor=(0.02, 0.98))
+        
         plt.tight_layout()
         plt.savefig(os.path.join(log_dir, f'heatmap_2D_{timestamp}.png'), dpi=300, bbox_inches='tight')
         plt.close()
@@ -803,6 +838,13 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
         # 3D scatter plot with color mapping
         scatter = ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], 
                            c=powers, cmap='viridis', s=50, alpha=0.8)
+        
+        # Mark starting position with large red star if it exists
+        if starting_idx is not None and starting_position is not None and len(starting_position) >= 3:
+            ax.scatter(starting_position[0], starting_position[1], starting_position[2], 
+                      c='red', marker='*', s=300, alpha=1.0, edgecolors='white', linewidth=2,
+                      label=f'Starting Position: {powers[starting_idx]:.1f} dBm')
+            ax.legend(loc='upper left')
         
         # Colorbar
         cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
@@ -823,6 +865,14 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
             for j in range(i+1, 3):
                 fig, ax = plt.subplots(figsize=(8, 6))
                 scatter = ax.scatter(positions[:, i], positions[:, j], c=powers, cmap='viridis', s=30, alpha=0.8)
+                
+                # Mark starting position with large red star if it exists
+                if starting_idx is not None and starting_position is not None and len(starting_position) >= max(i+1, j+1):
+                    ax.plot(starting_position[i], starting_position[j], 'r*', markersize=15, 
+                           label=f'Starting Position: {powers[starting_idx]:.1f} dBm', 
+                           markeredgecolor='white', markeredgewidth=1)
+                    ax.legend(loc='upper left', bbox_to_anchor=(0.02, 0.98))
+                
                 cbar = plt.colorbar(scatter, ax=ax)
                 cbar.set_label('Power (dBm)')
                 ax.set_xlabel(f'{axes[i]} Position')
@@ -1318,7 +1368,13 @@ class OptimizerApp:
     def update_plot(self, iteration, power, axis, position):
         self.iterations.append(iteration)
         self.powers.append(power)
-        self.colors.append(AXIS_COLORS[axis])
+        
+        # Handle special starting position marker
+        if axis == 'START':
+            self.colors.append('red')  # Red for starting position
+        else:
+            self.colors.append(AXIS_COLORS[axis])
+            
         self.positions.append(position.copy())
         self.ax.clear()
         
@@ -1327,11 +1383,16 @@ class OptimizerApp:
         self.ax.set_xlabel("Iteration")
         self.ax.set_ylabel("Power (dBm)")
         
-        # Plot all points with color coding
-        scatter = self.ax.scatter(self.iterations, self.powers, c=self.colors, s=50, alpha=0.7)
+        # Plot all points with color coding, special handling for starting position
+        for i, (iter_val, pwr, color) in enumerate(zip(self.iterations, self.powers, self.colors)):
+            if iter_val == -1:  # Starting position
+                self.ax.scatter([iter_val], [pwr], c='red', s=150, marker='*', 
+                              edgecolor='white', linewidth=1, label='Starting Position')
+            else:
+                self.ax.scatter([iter_val], [pwr], c=color, s=50, alpha=0.7)
         
-        # Highlight the current point
-        if len(self.iterations) > 0:
+        # Highlight the current point (if not starting position)
+        if len(self.iterations) > 0 and iteration != -1:
             self.ax.scatter([iteration], [power], c=[AXIS_COLORS[axis]], s=100, 
                           marker='o', edgecolor='black', linewidth=2, label=f'Current: {axis}')
         
@@ -1785,6 +1846,12 @@ class OptimizerApp:
             
             # Clear previous plotting data for hill climbing phase
             self.iterations, self.powers, self.colors, self.positions = [], [], [], []
+            
+            # Add starting position to hill climbing plot data
+            starting_power = read_power(pwr)
+            if starting_power is not None:
+                self.update_plot(-1, starting_power, 'START', current_pos.copy())  # Special iteration -1 for start
+                print(f"[HILLCLIMB] Starting position recorded: {starting_power:.1f} dBm")
             
             # Perform random walk + hill climbing on ALL 6 axes
             self.status.config(text="Phase 1: Random walk exploration...")
