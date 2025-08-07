@@ -1369,13 +1369,18 @@ class OptimizerApp:
         self.iterations.append(iteration)
         self.powers.append(power)
         
-        # Handle special markers
+        # Handle special markers and axis combinations
         if axis == 'START':
             self.colors.append('red')  # Red for starting position
         elif axis == 'LOCAL':
             self.colors.append('orange')  # Orange for local scanning
+        elif len(axis) == 2 and axis[0] in AXES and axis[1] in AXES:
+            # 2D cross-scan combinations (e.g. 'XY', 'ZU')
+            self.colors.append('purple')  # Purple for 2D cross-scans
+        elif axis in AXES:
+            self.colors.append(AXIS_COLORS[axis])  # Normal axis colors
         else:
-            self.colors.append(AXIS_COLORS[axis])
+            self.colors.append('gray')  # Default for unknown
             
         self.positions.append(position.copy())
         self.ax.clear()
@@ -1859,84 +1864,185 @@ class OptimizerApp:
                 self.update_plot(-1, starting_power, 'START', current_pos.copy())  # Special iteration -1 for start
                 print(f"[HILLCLIMB] Starting position recorded: {starting_power:.1f} dBm")
             
-            # Perform local scanning around the global maximum with ±50 range
-            self.status.config(text="Phase 1: Local scanning around global maximum (±50 range)...")
+            # SMART HILL CLIMBING: Limited to ≤400 tests total
+            self.status.config(text="Phase 1: Smart 1D axis scans around maximum (±50 range)...")
             self.root.update()
             
             i = 0
             position = current_pos.copy()
+            test_count = 0
+            max_tests = 400
             
             # Stop check callback
             def check_stop():
-                return self.stop_requested
+                return self.stop_requested or test_count >= max_tests
             
-            # Create local scan parameters around the current position (global maximum from scan)
-            local_scan_params = {}
-            scan_range = 50  # ±50 range
-            scan_steps = 11  # 11 points gives us steps of 10 units each
+            # Phase 1: 1D scans along each axis (6 × 11 = 66 tests)
+            axis_improvements = {}  # Track which axes show improvement
+            scan_range = 50
+            scan_steps = 11
             
             for axis in AXES:
-                center = position[axis]
-                start = center - scan_range
-                stop = center + scan_range
-                local_scan_params[axis] = np.linspace(start, stop, scan_steps)
-                print(f"[LOCAL SCAN] {axis}: {start:.0f} to {stop:.0f} ({scan_steps} points)")
-            
-            # Progress callback for local scan
-            def update_local_progress(current, total):
-                self.status.config(text=f"Local scanning: {current}/{total} ({100*current/total:.1f}%)")
-                self.root.update()
-            
-            # Perform local 6D scan around the global maximum
-            local_scan_data = brute_force_3d_scan(pwr, ser, local_scan_params, position, update_local_progress, check_stop)
-            
-            # Process local scan data for plotting
-            for point in local_scan_data:
-                if not point.get('is_starting_position', False):  # Skip the starting position as it's already plotted
-                    self.update_plot(i, point['power'], 'LOCAL', point['position'])
-                    i += 1
+                if check_stop():
+                    break
                     
-                    # Update global best if this is better than scan result
-                    if point['power'] > self.global_best_power:
-                        self.global_best_power = point['power']
-                        self.global_best_position = point['position'].copy()
-                        print(f"[GLOBAL] New best from local scan: {point['power']:.1f} dBm (improvement: +{point['power'] - self.best_scan_power:.1f} dBm)")
-                    
-                    self.root.update()
-                    
-                    # Check if stopped during local scan
-                    if self.stop_requested:
-                        break
-            
-            # Additional fine hill climbing (only if not stopped)
-            if not self.stop_requested and len(local_scan_data) > 1:
-                self.status.config(text="Phase 2: Fine hill climbing optimization...")
+                self.status.config(text=f"Scanning axis {axis} (±{scan_range})... Tests: {test_count}/{max_tests}")
                 self.root.update()
                 
-                # Move to the best position found in local scan
+                center = position[axis]
+                best_axis_power = self.global_best_power
+                best_axis_pos = center
+                
+                # 1D scan along this axis
+                for step in np.linspace(center - scan_range, center + scan_range, scan_steps):
+                    if check_stop():
+                        break
+                        
+                    # Move only this axis
+                    move_axis_to(ser, axis, step)
+                    test_pos = position.copy()
+                    test_pos[axis] = step
+                    
+                    power = read_power(pwr)
+                    test_count += 1
+                    
+                    if power is not None:
+                        self.update_plot(i, power, axis, test_pos)
+                        i += 1
+                        
+                        # Track best for this axis
+                        if power > best_axis_power:
+                            best_axis_power = power
+                            best_axis_pos = step
+                            
+                        # Update global best
+                        if power > self.global_best_power:
+                            self.global_best_power = power
+                            self.global_best_position = test_pos.copy()
+                            print(f"[PHASE1] New best on {axis}: {power:.1f} dBm (improvement: +{power - self.best_scan_power:.1f} dBm)")
+                        
+                        self.root.update()
+                
+                # Record improvement for this axis
+                improvement = best_axis_power - self.best_scan_power
+                axis_improvements[axis] = {
+                    'improvement': improvement,
+                    'best_pos': best_axis_pos,
+                    'best_power': best_axis_power
+                }
+                
+                # Move back to center for next axis scan
+                move_axis_to(ser, axis, center)
+                print(f"[PHASE1] {axis} scan complete: {improvement:+.1f} dBm improvement")
+            
+            # Phase 2: 2D cross-scans on most promising axes (≤120 tests)  
+            if not check_stop() and len(axis_improvements) >= 2:
+                self.status.config(text=f"Phase 2: 2D cross-scans on promising axes... Tests: {test_count}/{max_tests}")
+                self.root.update()
+                
+                # Find top 3 axes with most improvement
+                sorted_axes = sorted(axis_improvements.items(), key=lambda x: x[1]['improvement'], reverse=True)[:3]
+                
+                for i_axis, (axis1, data1) in enumerate(sorted_axes):
+                    for axis2, data2 in sorted_axes[i_axis+1:]:
+                        if check_stop() or test_count + 25 > max_tests:  # Leave room for phase 3
+                            break
+                            
+                        # 2D scan on these two axes (5×5 = 25 tests)
+                        steps1 = np.linspace(data1['best_pos'] - 25, data1['best_pos'] + 25, 5)
+                        steps2 = np.linspace(data2['best_pos'] - 25, data2['best_pos'] + 25, 5)
+                        
+                        for pos1 in steps1:
+                            for pos2 in steps2:
+                                if check_stop():
+                                    break
+                                    
+                                move_axis_to(ser, axis1, pos1)
+                                move_axis_to(ser, axis2, pos2)
+                                
+                                test_pos = position.copy()
+                                test_pos[axis1] = pos1
+                                test_pos[axis2] = pos2
+                                
+                                power = read_power(pwr)
+                                test_count += 1
+                                
+                                if power is not None:
+                                    self.update_plot(i, power, f'{axis1}{axis2}', test_pos)
+                                    i += 1
+                                    
+                                    if power > self.global_best_power:
+                                        self.global_best_power = power
+                                        self.global_best_position = test_pos.copy()
+                                        print(f"[PHASE2] New best on {axis1}+{axis2}: {power:.1f} dBm (improvement: +{power - self.best_scan_power:.1f} dBm)")
+                                    
+                                    self.root.update()
+                        
+                        print(f"[PHASE2] {axis1}+{axis2} cross-scan complete")
+                        if check_stop():
+                            break
+            
+            # Phase 3: Fine hill climbing (≤200 tests)
+            if not check_stop():
+                self.status.config(text=f"Phase 3: Fine hill climbing... Tests: {test_count}/{max_tests}")
+                self.root.update()
+                
+                # Move to globally best position found so far
                 if self.global_best_position != position:
                     for axis in AXES:
                         if abs(self.global_best_position[axis] - position[axis]) > 0.1:
                             move_axis_to(ser, axis, self.global_best_position[axis])
                     position = self.global_best_position.copy()
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                 
-                # Fine hill climbing with smaller steps
-                for axis, pos, pwrval in hill_climb_all_axes_constrained(pwr, ser, position, 5, check_stop):  # Step size 5
-                    self.update_plot(i, pwrval, axis, pos)
-                    i += 1
+                # Limited hill climbing with test count limit
+                remaining_tests = max_tests - test_count
+                hill_climb_count = 0
+                step_size = 10
+                
+                while not check_stop() and hill_climb_count < remaining_tests and step_size >= 1:
+                    improved = False
                     
-                    # Update global best if this is better than scan result
-                    if pwrval > self.global_best_power:
-                        self.global_best_power = pwrval
-                        self.global_best_position = pos.copy()
-                        print(f"[GLOBAL] New best from fine climbing: {pwrval:.1f} dBm (improvement: +{pwrval - self.best_scan_power:.1f} dBm)")
+                    for axis in AXES:
+                        if check_stop() or hill_climb_count >= remaining_tests:
+                            break
+                            
+                        # Try both directions
+                        for direction in [1, -1]:
+                            if check_stop() or hill_climb_count >= remaining_tests:
+                                break
+                                
+                            move_axis_to(ser, axis, position[axis] + direction * step_size)
+                            test_pos = position.copy()
+                            test_pos[axis] = position[axis] + direction * step_size
+                            
+                            power = read_power(pwr)
+                            test_count += 1
+                            hill_climb_count += 1
+                            
+                            if power is not None:
+                                self.update_plot(i, power, axis, test_pos)
+                                i += 1
+                                
+                                if power > self.global_best_power:
+                                    self.global_best_power = power
+                                    self.global_best_position = test_pos.copy()
+                                    position[axis] = test_pos[axis]
+                                    improved = True
+                                    print(f"[PHASE3] Fine climb {axis}: {power:.1f} dBm (improvement: +{power - self.best_scan_power:.1f} dBm)")
+                                else:
+                                    # Move back if no improvement
+                                    move_axis_to(ser, axis, position[axis])
+                                
+                                self.root.update()
                     
-                    self.root.update()
-                    
-                    # Check if stopped during hill climbing
-                    if self.stop_requested:
-                        break
+                    if not improved:
+                        step_size = step_size // 2
+                        print(f"[PHASE3] Reducing step size to {step_size}")
+                
+                print(f"[PHASE3] Fine hill climbing complete after {hill_climb_count} tests")
+            
+            print(f"[SMART CLIMB] Total tests used: {test_count}/{max_tests}")
             
             # Display final results and handle positioning using GLOBAL best (scan + hill climbing)
             # Use the global best which considers both scan and hill climbing results
