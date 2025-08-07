@@ -743,11 +743,13 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
     # Find peak power and position for title
     max_idx = np.argmax(powers)
     peak_power = powers[max_idx]
-    peak_positions = {ax: positions[max_idx][i] for i, ax in enumerate(axes)}
+    
+    # Get the full DS102 position (all 6 axes) from the scan data
+    full_peak_position = scan_data[max_idx]['position']
     
     # Format all XYZUVW positions for title
     all_axes = ['X', 'Y', 'Z', 'U', 'V', 'W']
-    position_str = ', '.join([f"{ax}:{peak_positions.get(ax, 0):.0f}" for ax in all_axes])
+    position_str = ', '.join([f"{ax}:{full_peak_position[ax]:.0f}" for ax in all_axes])
     
     if len(axes) == 1:
         # 1D plot
