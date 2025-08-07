@@ -1542,102 +1542,21 @@ class OptimizerApp:
                 
                 # Check if scan was stopped
                 if self.stop_requested:
-                    # Move DS102 to the best position found so far
-                    self.status.config(text="STOPPED - Moving to best position found...")
-                    self.root.update()
-                    
-                    try:
-                        print(f"[POSITIONING STOPPED] Moving DS102 to best position: {pos_str}")
-                        print(f"[POSITIONING STOPPED] Best power found: {best_power:.1f} dBm")
-                        
-                        # Move each axis individually with detailed logging
-                        for axis in AXES:
-                            target_pos = best_pos[axis]
-                            current_pos = get_current_position(ser, axis) if 'get_current_position' in globals() else 'unknown'
-                            print(f"[POSITIONING STOPPED] {axis}: {current_pos} → {target_pos}")
-                            move_axis_to(ser, axis, target_pos)
-                            time.sleep(0.1)  # Small delay between axes
-                        
-                        # Wait for all positioning to complete
-                        print("[POSITIONING STOPPED] Waiting for all movements to complete...")
-                        time.sleep(2)  # Increased wait time
-                        
-                        # Verify final position and power
-                        final_pos = get_all_positions(ser)
-                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
-                        
-                        # Read final power to verify we're at the right position
-                        final_power = read_power(pwr)
-                        power_diff = abs(final_power - best_power) if final_power is not None else float('inf')
-                        
-                        print(f"[POSITIONING STOPPED] Final position: {final_pos_str}")
-                        print(f"[POSITIONING STOPPED] Final power: {final_power:.1f} dBm (expected: {best_power:.1f} dBm, diff: {power_diff:.1f} dBm)")
-                        
-                        if final_power is not None and power_diff > 2.0:
-                            print(f"[WARNING] Power discrepancy detected! Expected {best_power:.1f} dBm but got {final_power:.1f} dBm")
-                            self.status.config(text=f"STOPPED - WARNING: Position may not be optimal - Expected: {best_power:.1f} dBm, Actual: {final_power:.1f} dBm")
-                            final_power_display = final_power
-                        else:
-                            self.status.config(text=f"Scan STOPPED! Moved to best position - Max: {best_power:.1f} dBm @ {final_pos_str}")
-                            final_power_display = best_power
-                            
-                        messagebox.showinfo("Scan Stopped", 
-                                          f"Scan was stopped by user.\n\n"
-                                          f"Maximum power found: {best_power:.1f} dBm\n"
-                                          f"DS102 moved to best position found:\n"
-                                          f"Position: {final_pos_str}\n"
-                                          f"Expected Power: {best_power:.1f} dBm\n"
-                                          f"Actual Power: {final_power_display:.1f} dBm\n\n"
-                                          f"Partial results saved to: {log_dir}\n"
-                                          f"Points scanned: {len(scan_data)}")
-                    except Exception as e:
-                        self.status.config(text=f"Scan STOPPED! Error moving to best position: {e}")
-                        print(f"[ERROR] Failed to move to best position: {e}")
-                        import traceback
-                        traceback.print_exc()
+                    self.status.config(text=f"Scan STOPPED! Found best: {best_power:.1f} dBm @ {pos_str}")
+                    messagebox.showinfo("Scan Stopped", 
+                                      f"Scan was stopped by user.\n\n"
+                                      f"Maximum power found: {best_power:.1f} dBm\n"
+                                      f"Best position: {pos_str}\n\n"
+                                      f"NOTE: DS102 remains at current position.\n"
+                                      f"Use CLIMB HILL to move to optimal position.\n\n"
+                                      f"Results saved to: {log_dir}\n"
+                                      f"Points scanned: {len(scan_data)}")
                 else:
-                    # Move DS102 to the best position found during scan
-                    self.status.config(text="Scan complete - Moving to best position...")
-                    self.root.update()
-                    
-                    try:
-                        print(f"[POSITIONING] Moving DS102 to best position: {pos_str}")
-                        print(f"[POSITIONING] Best power found: {best_power:.1f} dBm")
-                        
-                        # Move each axis individually with detailed logging
-                        for axis in AXES:
-                            target_pos = best_pos[axis]
-                            current_pos = get_current_position(ser, axis) if 'get_current_position' in globals() else 'unknown'
-                            print(f"[POSITIONING] {axis}: {current_pos} → {target_pos}")
-                            move_axis_to(ser, axis, target_pos)
-                            time.sleep(0.1)  # Small delay between axes
-                        
-                        # Wait for all positioning to complete
-                        print("[POSITIONING] Waiting for all movements to complete...")
-                        time.sleep(2)  # Increased wait time
-                        
-                        # Verify final position and power
-                        final_pos = get_all_positions(ser)
-                        final_pos_str = ', '.join([f"{a}:{final_pos[a]:.0f}" for a in AXES])
-                        
-                        # Read final power to verify we're at the right position
-                        final_power = read_power(pwr)
-                        power_diff = abs(final_power - best_power) if final_power is not None else float('inf')
-                        
-                        print(f"[POSITIONING] Final position: {final_pos_str}")
-                        print(f"[POSITIONING] Final power: {final_power:.1f} dBm (expected: {best_power:.1f} dBm, diff: {power_diff:.1f} dBm)")
-                        
-                        if final_power is not None and power_diff > 2.0:
-                            print(f"[WARNING] Power discrepancy detected! Expected {best_power:.1f} dBm but got {final_power:.1f} dBm")
-                            self.status.config(text=f"WARNING: Position may not be optimal - Expected: {best_power:.1f} dBm, Actual: {final_power:.1f} dBm @ {final_pos_str}")
-                        else:
-                            self.status.config(text=f"Scan Complete! Moved to best position - Max: {best_power:.1f} dBm @ {final_pos_str}")
-                            
-                    except Exception as e:
-                        self.status.config(text=f"Scan Complete! Error moving to best position: {e}")
-                        print(f"[ERROR] Failed to move to best position: {e}")
-                        import traceback
-                        traceback.print_exc()
+                    # Scan completed normally - show results but DON'T move DS102 yet
+                    self.status.config(text=f"Scan Complete! Best: {best_power:.1f} dBm @ {pos_str}")
+                    print(f"[SCAN COMPLETE] Best power found: {best_power:.1f} dBm")
+                    print(f"[SCAN COMPLETE] Best position: {pos_str}")
+                    print(f"[SCAN COMPLETE] DS102 will move to optimal position when user clicks 'Yes' for hill climbing")
                 
                 # Show dialog asking if user wants to continue with hill climbing (only if not stopped)
                 if not self.stop_requested:
@@ -1646,8 +1565,11 @@ class OptimizerApp:
                         f"Scan completed successfully!\n\n"
                         f"Maximum power found: {best_power:.1f} dBm\n"
                         f"Best position: {pos_str}\n\n"
-                        f"Would you like to continue with hill climbing optimization?\n"
-                        f"(This will move to the optimal position and perform random walk optimization on all 6 axes)",
+                        f"Would you like to continue with hill climbing optimization?\n\n"
+                        f"This will:\n"
+                        f"1. Move DS102 to the optimal position found by scan\n"
+                        f"2. Perform smart hill climbing (≤400 tests) on all 6 axes\n"
+                        f"3. Find even better positions around the scan optimum",
                         icon='question'
                     )
                 else:
