@@ -1430,10 +1430,30 @@ class OptimizerApp:
         legend_elements = []
         used_axes = set()
         for i, color in enumerate(self.colors):
-            axis_name = [a for a, c in AXIS_COLORS.items() if c == color][0]
+            # Find axis name from color, handle special colors gracefully
+            axis_candidates = [a for a, c in AXIS_COLORS.items() if c == color]
+            if axis_candidates:
+                axis_name = axis_candidates[0]
+                label_text = f'Axis {axis_name}'
+            elif color == 'red':
+                axis_name = 'START'
+                label_text = 'Starting Position'
+            elif color == 'orange':
+                axis_name = 'LOCAL'  
+                label_text = 'Local Scan'
+            elif color == 'purple':
+                axis_name = '2D'
+                label_text = '2D Cross-Scan'
+            elif color == 'gray':
+                axis_name = 'UNKNOWN'
+                label_text = 'Unknown'
+            else:
+                axis_name = f'COLOR_{color}'
+                label_text = f'Unknown ({color})'
+                
             if axis_name not in used_axes:
                 legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', 
-                                                markerfacecolor=color, markersize=8, label=f'Axis {axis_name}'))
+                                                markerfacecolor=color, markersize=8, label=label_text))
                 used_axes.add(axis_name)
         
         if legend_elements:
