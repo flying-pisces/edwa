@@ -1,3 +1,4 @@
 src/log/
 .idea/
+/log
 .pyc
