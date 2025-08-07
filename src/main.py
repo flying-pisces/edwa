@@ -290,6 +290,15 @@ def compare_power_readings(inst, debug=True):
 # Optimization
 def random_walk(inst, ser, position, iterations, step_size, stop_check=None):
     history = []
+    
+    # Record the starting position and power as baseline
+    starting_position = position.copy()
+    starting_power = read_power(inst)
+    best_power = starting_power
+    best_position = starting_position.copy()
+    
+    print(f"[RANDOMWALK] Starting from power: {starting_power:.1f} dBm - this is the minimum baseline")
+    
     for i in range(iterations):
         # Check for stop request
         if stop_check and stop_check():
@@ -303,14 +312,38 @@ def random_walk(inst, ser, position, iterations, step_size, stop_check=None):
         if power is not None:
             position[axis] += direction * step_size
             history.append((axis, position.copy(), power))
+            
+            # Track the best position found during random walk
+            if power > best_power:
+                best_power = power
+                best_position = position.copy()
+                print(f"[RANDOMWALK] New best: {power:.1f} dBm (improvement: {power - starting_power:+.1f})")
         else:
             move_stage(ser, axis, -direction * step_size)
+    
+    # Ensure we end at the best position found (never worse than starting)
+    if best_position != position:
+        print(f"[RANDOMWALK] Moving to best random walk position: {best_power:.1f} dBm")
+        for axis in AXES:
+            if abs(best_position[axis] - position[axis]) > 0.1:
+                move_axis_to(ser, axis, best_position[axis])
+        position.update(best_position)
+        time.sleep(0.2)
+    
     return history
 
 def hill_climb(inst, ser, position, step_size, stop_check=None):
     improved = True
     history = []
     base_power = read_power(inst)
+    starting_power = base_power  # Store original power for final comparison
+    
+    # Track the globally best position found - starting position is the minimum baseline
+    global_best_power = base_power
+    global_best_position = position.copy()
+    
+    print(f"[HILLCLIMB] Starting from power: {base_power:.1f} dBm - this is the minimum baseline")
+    
     while improved and step_size >= MIN_STEP:
         # Check for stop request
         if stop_check and stop_check():
@@ -322,7 +355,7 @@ def hill_climb(inst, ser, position, step_size, stop_check=None):
             # Check for stop request before each axis
             if stop_check and stop_check():
                 print(f"[INFO] Hill climb stopped during axis {axis} optimization")
-                return history
+                break
                 
             for direction in [1, -1]:
                 move_stage(ser, axis, direction * step_size)
@@ -332,10 +365,36 @@ def hill_climb(inst, ser, position, step_size, stop_check=None):
                     history.append((axis, position.copy(), power))
                     improved = True
                     base_power = power
+                    
+                    # Update global best if this is better
+                    if power > global_best_power:
+                        improvement = power - global_best_power
+                        global_best_power = power
+                        global_best_position = position.copy()
+                        print(f"[HILLCLIMB] NEW GLOBAL BEST: {power:.1f} dBm (improvement: +{improvement:.1f} dBm)")
                 else:
                     move_stage(ser, axis, -direction * step_size)
         if not improved:
             step_size = step_size // 2
+    
+    # Move to the globally best position found
+    if global_best_position != position:
+        print(f"[INFO] Moving to globally best position with power {global_best_power:.1f} dBm")
+        for axis in AXES:
+            if abs(global_best_position[axis] - position[axis]) > 0.1:  # Only move if significant difference
+                move_axis_to(ser, axis, global_best_position[axis])
+        position.update(global_best_position)
+        time.sleep(0.2)  # Allow movement to complete
+    
+    # Show final improvement summary
+    total_improvement = global_best_power - starting_power
+    if total_improvement > 0.1:
+        print(f"[HILLCLIMB COMPLETE] Total improvement: +{total_improvement:.1f} dBm ({starting_power:.1f} → {global_best_power:.1f} dBm)")
+    elif total_improvement < -0.1:
+        print(f"[HILLCLIMB COMPLETE] Power decreased: {total_improvement:.1f} dBm - this should not happen!")
+    else:
+        print(f"[HILLCLIMB COMPLETE] No significant change in power: {global_best_power:.1f} dBm")
+    
     return history
 
 def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
@@ -343,10 +402,15 @@ def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
     improved = True
     history = []
     base_power = read_power(inst)
+    starting_power = base_power  # Store original power for final comparison
     iteration_count = 0
     max_iterations = 200  # Prevent infinite loops
     
-    print(f"[INFO] Starting hill climb on all 6 axes from power: {base_power:.1f} dBm")
+    # Track the globally best position found - starting position is the minimum baseline
+    global_best_power = base_power
+    global_best_position = position.copy()
+    
+    print(f"[INFO] Starting hill climb on all 6 axes from power: {base_power:.1f} dBm - this is the minimum baseline")
     
     while improved and step_size >= MIN_STEP and iteration_count < max_iterations:
         # Check for stop request
@@ -362,7 +426,7 @@ def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
             # Check for stop request before each axis
             if stop_check and stop_check():
                 print(f"[INFO] Hill climb stopped during axis {axis} optimization")
-                return history
+                break
                 
             best_direction = None
             best_power = base_power
@@ -388,6 +452,12 @@ def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
                 history.append((axis, position.copy(), best_power))
                 improved = True
                 base_power = best_power
+                
+                # Update global best if this is better
+                if best_power > global_best_power:
+                    global_best_power = best_power
+                    global_best_position = position.copy()
+                
                 print(f"[HILLCLIMB] Axis {axis}: {best_direction*step_size:+.0f} → {best_power:.1f} dBm")
         
         # If no improvement found, reduce step size
@@ -395,12 +465,38 @@ def hill_climb_all_axes(inst, ser, position, step_size, stop_check=None):
             step_size = step_size // 2
             print(f"[HILLCLIMB] Reducing step size to {step_size}")
     
-    print(f"[INFO] Hill climb completed after {iteration_count} iterations")
+    # Move to the globally best position found
+    if global_best_position != position:
+        print(f"[INFO] Moving to globally best position with power {global_best_power:.1f} dBm")
+        for axis in AXES:
+            if abs(global_best_position[axis] - position[axis]) > 0.1:  # Only move if significant difference
+                move_axis_to(ser, axis, global_best_position[axis])
+        position.update(global_best_position)
+        time.sleep(0.2)  # Allow movement to complete
+    
+    # Show final improvement summary
+    total_improvement = global_best_power - starting_power
+    if total_improvement > 0.1:
+        print(f"[HILLCLIMB ALL AXES COMPLETE] Total improvement: +{total_improvement:.1f} dBm ({starting_power:.1f} → {global_best_power:.1f} dBm) after {iteration_count} iterations")
+    elif total_improvement < -0.1:
+        print(f"[HILLCLIMB ALL AXES COMPLETE] Power decreased: {total_improvement:.1f} dBm - this should not happen!")
+    else:
+        print(f"[HILLCLIMB ALL AXES COMPLETE] No significant change in power: {global_best_power:.1f} dBm after {iteration_count} iterations")
+    
     return history
 
 def random_walk_constrained(inst, ser, position, center_positions, iterations, step_size, stop_check=None):
     """Random walk with ±100 constraint from center positions for all 6 axes"""
     history = []
+    
+    # Record the starting position and power as baseline  
+    starting_position = position.copy()
+    starting_power = read_power(inst)
+    best_power = starting_power
+    best_position = starting_position.copy()
+    
+    print(f"[RANDOMWALK] Starting constrained walk from power: {starting_power:.1f} dBm - this is the minimum baseline")
+    
     for i in range(iterations):
         # Check for stop request
         if stop_check and stop_check():
@@ -423,13 +519,29 @@ def random_walk_constrained(inst, ser, position, center_positions, iterations, s
             if power is not None:
                 position[axis] = new_position
                 history.append((axis, position.copy(), power))
-                print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} → {power:.1f} dBm (within ±100 range)")
+                
+                # Track the best position found during random walk
+                if power > best_power:
+                    best_power = power
+                    best_position = position.copy()
+                    print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} → {power:.1f} dBm (NEW BEST, improvement: {power - starting_power:+.1f})")
+                else:
+                    print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} → {power:.1f} dBm (within ±100 range)")
             else:
                 # Move back if power reading failed
                 move_stage(ser, axis, -move_amount)
         else:
             # Move would exceed ±100 range, skip this iteration
             print(f"[RANDOMWALK] Axis {axis}: {move_amount:+.0f} SKIPPED (would exceed ±100 range)")
+    
+    # Ensure we end at the best position found (never worse than starting)
+    if best_position != position:
+        print(f"[RANDOMWALK] Moving to best constrained walk position: {best_power:.1f} dBm")
+        for axis in AXES:
+            if abs(best_position[axis] - position[axis]) > 0.1:
+                move_axis_to(ser, axis, best_position[axis])
+        position.update(best_position)
+        time.sleep(0.2)
     
     return history
 
@@ -438,11 +550,16 @@ def hill_climb_all_axes_constrained(inst, ser, position, step_size, stop_check=N
     improved = True
     history = []
     base_power = read_power(inst)
+    starting_power = base_power  # Store original power for final comparison
     iteration_count = 0
     max_iterations = 200  # Prevent infinite loops
     min_step = 1  # Minimum step size is 1
     
-    print(f"[INFO] Starting constrained hill climb on all 6 axes from power: {base_power:.1f} dBm")
+    # Track the globally best position found - starting position is the minimum baseline
+    global_best_power = base_power
+    global_best_position = position.copy()
+    
+    print(f"[INFO] Starting constrained hill climb on all 6 axes from power: {base_power:.1f} dBm - this is the minimum baseline")
     
     while improved and step_size >= min_step and iteration_count < max_iterations:
         # Check for stop request
@@ -458,7 +575,7 @@ def hill_climb_all_axes_constrained(inst, ser, position, step_size, stop_check=N
             # Check for stop request before each axis
             if stop_check and stop_check():
                 print(f"[INFO] Constrained hill climb stopped during axis {axis} optimization")
-                return history
+                break
                 
             best_direction = None
             best_power = base_power
@@ -484,6 +601,12 @@ def hill_climb_all_axes_constrained(inst, ser, position, step_size, stop_check=N
                 history.append((axis, position.copy(), best_power))
                 improved = True
                 base_power = best_power
+                
+                # Update global best if this is better
+                if best_power > global_best_power:
+                    global_best_power = best_power
+                    global_best_position = position.copy()
+                
                 print(f"[HILLCLIMB] Axis {axis}: {best_direction*step_size:+.0f} → {best_power:.1f} dBm")
         
         # If no improvement found, reduce step size
@@ -498,7 +621,24 @@ def hill_climb_all_axes_constrained(inst, ser, position, step_size, stop_check=N
                 print(f"[HILLCLIMB] Reached minimum step size ({min_step}) with no improvement")
                 break
     
-    print(f"[INFO] Constrained hill climb completed after {iteration_count} iterations")
+    # Move to the globally best position found
+    if global_best_position != position:
+        print(f"[INFO] Moving to globally best position with power {global_best_power:.1f} dBm")
+        for axis in AXES:
+            if abs(global_best_position[axis] - position[axis]) > 0.1:  # Only move if significant difference
+                move_axis_to(ser, axis, global_best_position[axis])
+        position.update(global_best_position)
+        time.sleep(0.2)  # Allow movement to complete
+    
+    # Show final improvement summary
+    total_improvement = global_best_power - starting_power
+    if total_improvement > 0.1:
+        print(f"[CONSTRAINED HILLCLIMB COMPLETE] Total improvement: +{total_improvement:.1f} dBm ({starting_power:.1f} → {global_best_power:.1f} dBm) after {iteration_count} iterations")
+    elif total_improvement < -0.1:
+        print(f"[CONSTRAINED HILLCLIMB COMPLETE] Power decreased: {total_improvement:.1f} dBm - this should not happen!")
+    else:
+        print(f"[CONSTRAINED HILLCLIMB COMPLETE] No significant change in power: {global_best_power:.1f} dBm after {iteration_count} iterations")
+    
     return history
 
 def systematic_scan(inst, ser, scan_params, origin_positions):
