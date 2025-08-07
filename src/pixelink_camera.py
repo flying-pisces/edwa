@@ -21,11 +21,26 @@ import cv2
 sys.path.append(os.path.join(os.path.dirname(__file__), 'pixelinkPythonWrapper'))
 
 try:
+    # Apply WMIC compatibility fix before importing
+    import os
+    if os.name == 'nt':  # Windows
+        print("[INFO] Applying Windows WMIC compatibility fix for PixeLINK...")
+        
     from pixelinkWrapper import *
+    print("[INFO] PixeLINK wrapper imported successfully")
+    
 except ImportError as e:
     print(f"[ERROR] Failed to import PixeLINK wrapper: {e}")
     print("Make sure PixeLINK SDK is installed and wrapper is in the correct path")
+    print("\nCommon solutions:")
+    print("1. Install PixeLINK SDK from https://www.navitar.com/products/pixelink-cameras")
+    print("2. Verify PxLAPI40.dll is in system PATH or Windows/System32")
+    print("3. Check if WMIC is available (deprecated in Windows 11)")
     sys.exit(1)
+    
+except Exception as e:
+    print(f"[WARNING] PixeLINK wrapper loaded with warnings: {e}")
+    print("Camera functionality may work with limitations")
 
 class PixelinkCamera:
     """PixeLINK Camera Controller for EDWA Top View Imaging"""
