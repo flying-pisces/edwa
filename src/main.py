@@ -25,6 +25,34 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+# Camera integration
+try:
+    from camera_integration import (
+        initialize_camera_system, capture_scan_start_image, capture_scan_optimum_image,
+        capture_hillclimb_start_image, capture_hillclimb_optimum_image,
+        capture_scan_images_during_process, capture_optimization_sequence,
+        cleanup_camera_system, camera_streaming
+    )
+    CAMERA_AVAILABLE = True
+    print("[INFO] Camera integration loaded successfully")
+except ImportError as e:
+    CAMERA_AVAILABLE = False
+    print(f"[WARNING] Camera integration not available: {e}")
+    # Define dummy functions
+    def initialize_camera_system(*args, **kwargs): return True
+    def capture_scan_start_image(*args, **kwargs): return None
+    def capture_scan_optimum_image(*args, **kwargs): return None
+    def capture_hillclimb_start_image(*args, **kwargs): return None
+    def capture_hillclimb_optimum_image(*args, **kwargs): return None
+    def capture_scan_images_during_process(*args, **kwargs): return []
+    def capture_optimization_sequence(*args, **kwargs): return []
+    def cleanup_camera_system(*args, **kwargs): pass
+    def camera_streaming(): 
+        from contextlib import contextmanager
+        @contextmanager
+        def dummy_context(): yield
+        return dummy_context()
+
 # Hardware setup
 PUMP1_ADDRESS = "USB0::0x1313::0x804F::M01093719::0::INSTR"
 PUMP2_ADDRESS = "USB0::0x1313::0x804F::M00859480::0::INSTR"  # Adjust as needed
@@ -918,6 +946,16 @@ class OptimizerApp:
         self.axis_entries = {}
         self.current_positions = {}
         
+        # Initialize camera system
+        self.camera_enabled = tk.BooleanVar(value=CAMERA_AVAILABLE)
+        if CAMERA_AVAILABLE:
+            try:
+                initialize_camera_system(enable_camera=True)
+                print("[INFO] Camera system initialized for EDWA")
+            except Exception as e:
+                print(f"[WARNING] Camera system initialization failed: {e}")
+                self.camera_enabled.set(False)
+        
         # Initialize axis variables
         for axis in AXES:
             self.axis_enabled[axis] = tk.BooleanVar(value=False)
@@ -1085,6 +1123,36 @@ class OptimizerApp:
         laser_button_frame.pack(fill=tk.X, pady=5)
         tk.Button(laser_button_frame, text="Read Current Laser Values", command=self.read_current_laser_values, 
                  bg="lightcyan", font=("Arial", 10, "bold")).pack(anchor="w")
+        
+        # Camera controls
+        self.setup_camera_controls(parent)
+    
+    def setup_camera_controls(self, parent):
+        """Setup camera control UI section"""
+        camera_frame = tk.LabelFrame(parent, text="Top View Camera", font=("Arial", 11, "bold"), bg="#fff0e6")
+        camera_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Camera enable checkbox
+        camera_enable_frame = tk.Frame(camera_frame, bg="#fff0e6")
+        camera_enable_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        tk.Checkbutton(camera_enable_frame, text="Enable Camera Capture", 
+                      variable=self.camera_enabled, bg="#fff0e6", 
+                      font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        
+        # Camera status
+        self.camera_status = tk.Label(camera_frame, text="Camera Status: Ready" if CAMERA_AVAILABLE else "Camera Status: Not Available", 
+                                    bg="#fff0e6", font=("Arial", 9))
+        self.camera_status.pack(fill=tk.X, padx=5, pady=2)
+        
+        # Camera controls
+        camera_button_frame = tk.Frame(camera_frame, bg="#fff0e6")
+        camera_button_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        tk.Button(camera_button_frame, text="Test Capture", command=self.test_camera_capture, 
+                 bg="lightyellow", font=("Arial", 9), width=12).pack(side=tk.LEFT, padx=2)
+        tk.Button(camera_button_frame, text="Live Preview", command=self.open_camera_preview, 
+                 bg="lightblue", font=("Arial", 9), width=12).pack(side=tk.LEFT, padx=2)
     
     def setup_axis_config(self, parent):
         """Setup DS102 axis configuration UI"""
@@ -1246,6 +1314,51 @@ class OptimizerApp:
         except Exception as e:
             self.status.config(text=f"Error reading laser values: {e}")
             messagebox.showerror("Error", f"Failed to read laser values: {e}")
+    
+    def test_camera_capture(self):
+        """Test camera capture functionality"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+            
+            self.camera_status.config(text="Camera Status: Capturing...")
+            self.root.update()
+            
+            # Import camera functions
+            from pixelink_camera import test_camera
+            
+            if test_camera():
+                self.camera_status.config(text="Camera Status: Test capture successful")
+                messagebox.showinfo("Camera", "Test capture successful! Check camera_captures folder.")
+            else:
+                self.camera_status.config(text="Camera Status: Test capture failed")
+                messagebox.showerror("Camera", "Test capture failed")
+                
+        except Exception as e:
+            self.camera_status.config(text="Camera Status: Error")
+            messagebox.showerror("Camera Error", f"Camera test failed: {e}")
+    
+    def open_camera_preview(self):
+        """Open camera preview window"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+            
+            from pixelink_camera import PixelinkCamera, CameraPreviewWindow
+            
+            # Create camera and preview window
+            camera = PixelinkCamera()
+            if camera.initialize():
+                preview = CameraPreviewWindow(camera)
+                preview.start_preview()
+                messagebox.showinfo("Camera", "Preview window opened")
+            else:
+                messagebox.showerror("Camera", "Failed to initialize camera for preview")
+                
+        except Exception as e:
+            messagebox.showerror("Camera Error", f"Preview failed: {e}")
     
     def capture_screenshots(self):
         """Manually capture screenshots for testing"""
@@ -1559,7 +1672,7 @@ class OptimizerApp:
             
             generate_heatmaps(scan_data, enabled_axes, timestamp, log_dir)
             
-            # Capture screenshots
+            # Capture screenshots and camera images
             self.status.config(text="Capturing screenshots...")
             self.root.update()
             
@@ -1568,6 +1681,24 @@ class OptimizerApp:
             
             # Capture GUI screenshot
             capture_gui_screenshot(self.root, log_dir, timestamp)
+            
+            # Capture camera images if enabled
+            if self.camera_enabled.get():
+                try:
+                    # Capture scan starting position
+                    capture_scan_start_image(origin_positions, log_dir)
+                    
+                    # Capture images during scan process
+                    capture_scan_images_during_process(scan_data, log_dir)
+                    
+                    # Capture scan optimum position if we have results
+                    if scan_data:
+                        best_point = max(scan_data, key=lambda x: x['power'])
+                        capture_scan_optimum_image(best_point['position'], log_dir)
+                        
+                except Exception as e:
+                    print(f"[WARNING] Camera capture during scan failed: {e}")
+                    self.camera_status.config(text="Camera Status: Capture failed")
             
             # Save scan data
             self.save_scan_results(scan_data, enabled_axes, timestamp, log_dir)
@@ -1810,6 +1941,17 @@ class OptimizerApp:
             
             # Capture GUI screenshot
             capture_gui_screenshot(self.root, log_dir, timestamp)
+            
+            # Capture camera images if enabled
+            if self.camera_enabled.get():
+                try:
+                    # Capture hill climbing optimum position
+                    final_pos = get_all_positions(ser)
+                    capture_hillclimb_optimum_image(final_pos, log_dir)
+                    
+                except Exception as e:
+                    print(f"[WARNING] Camera capture during hill climbing failed: {e}")
+                    self.camera_status.config(text="Camera Status: Capture failed")
             
             self.save_results(log_dir)
 
@@ -2214,4 +2356,12 @@ class OptimizerApp:
 if __name__ == "__main__":
     root = tk.Tk()
     app = OptimizerApp(root)
+    
+    # Add cleanup handler for camera system
+    def on_closing():
+        if CAMERA_AVAILABLE:
+            cleanup_camera_system()
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
