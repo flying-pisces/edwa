@@ -24,8 +24,13 @@ class EDWACameraManager:
         self.is_initialized = False
         
         if self.enable_camera:
-            self.camera = PixelinkCamera()
-            self.initialize()
+            try:
+                self.camera = PixelinkCamera()
+                self.initialize()
+            except Exception as e:
+                print(f"[WARNING] Camera initialization failed: {e}")
+                self.enable_camera = False
+                self.camera = None
     
     def initialize(self):
         """Initialize camera system"""

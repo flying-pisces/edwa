@@ -26,7 +26,7 @@ try:
     if os.name == 'nt':  # Windows
         print("[INFO] Applying Windows WMIC compatibility fix for PixeLINK...")
         
-    from pixelinkWrapper import *
+    from pixelinkWrapper import PxLApi
     print("[INFO] PixeLINK wrapper imported successfully")
     
 except ImportError as e:
@@ -36,11 +36,18 @@ except ImportError as e:
     print("1. Install PixeLINK SDK from https://www.navitar.com/products/pixelink-cameras")
     print("2. Verify PxLAPI40.dll is in system PATH or Windows/System32")
     print("3. Check if WMIC is available (deprecated in Windows 11)")
+    print("4. Try running as Administrator if permission issues")
     sys.exit(1)
     
 except Exception as e:
-    print(f"[WARNING] PixeLINK wrapper loaded with warnings: {e}")
-    print("Camera functionality may work with limitations")
+    print(f"[ERROR] PixeLINK wrapper failed to load: {e}")
+    print("This may be due to:")
+    print("1. Missing PixeLINK SDK or PxLAPI40.dll")
+    print("2. Incompatible Windows version or missing dependencies")
+    print("3. WMIC compatibility issues (should be fixed)")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 
 class PixelinkCamera:
     """PixeLINK Camera Controller for EDWA Top View Imaging"""
