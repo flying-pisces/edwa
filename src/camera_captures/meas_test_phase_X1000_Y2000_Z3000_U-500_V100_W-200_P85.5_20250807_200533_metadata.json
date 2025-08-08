@@ -1,0 +1,25 @@
+{
+  "timestamp": "20250807_200533",
+  "position": {
+    "X": 1000,
+    "Y": 2000,
+    "Z": 3000,
+    "U": -500,
+    "V": 100,
+    "W": -200
+  },
+  "power_reading": 85.5,
+  "phase": "test_phase",
+  "camera_settings": {
+    "exposure_time": 15.0,
+    "auto_exposure": false,
+    "gain": 5.0,
+    "trigger_mode": "software",
+    "image_format": "3"
+  },
+  "camera_info": {
+    "model": "D3010",
+    "serial": "318002000",
+    "firmware": "18.00.05.04"
+  }
+}

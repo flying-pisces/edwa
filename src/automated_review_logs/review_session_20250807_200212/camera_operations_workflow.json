@@ -1,0 +1,11 @@
+{
+  "status": "FAIL",
+  "timestamp": "2025-08-07T20:02:20.693064",
+  "details": {
+    "workflow_test": false,
+    "fallback_test": false,
+    "camera_operations_ready": false,
+    "stdout": "\n",
+    "stderr": "\n"
+  }
+}

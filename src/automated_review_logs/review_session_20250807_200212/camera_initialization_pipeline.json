@@ -1,0 +1,12 @@
+{
+  "status": "FAIL",
+  "timestamp": "2025-08-07T20:02:20.397920",
+  "details": {
+    "simple_test": false,
+    "enhanced_test": true,
+    "integration_test": false,
+    "test_suite": false,
+    "critical_path_success": false,
+    "notes": "Software validation failed"
+  }
+}

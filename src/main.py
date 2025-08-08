@@ -920,8 +920,8 @@ def generate_heatmaps(scan_data, axes, timestamp, log_dir):
 class OptimizerApp:
     def __init__(self, root):
         self.root = root
-        root.title("Integrated Laser + DS102 Optimizer")
-        root.geometry("1200x800")
+        root.title("Enhanced EDWA Optimizer with Live Camera")
+        root.geometry("1600x900")  # Enlarged for camera view
         
         # Variables - keep old variables for compatibility but will be managed by new controls
         self.pump1_current = tk.DoubleVar(value=50)
@@ -990,18 +990,29 @@ class OptimizerApp:
         self.read_current_positions()
     
     def setup_ui(self):
-        # Main frame
+        # Main frame with three panels
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Left panel for controls
-        control_frame = tk.Frame(main_frame)
+        # Left panel for controls (narrower)
+        control_frame = tk.Frame(main_frame, width=400)
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        control_frame.pack_propagate(False)  # Maintain fixed width
+        
+        # Middle panel for live camera view
+        camera_frame = tk.Frame(main_frame, width=500, relief=tk.SUNKEN, bd=2, bg='black')
+        camera_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+        camera_frame.pack_propagate(False)  # Maintain fixed width
+        
+        # Right panel for plot (remaining space)
+        plot_frame = tk.Frame(main_frame)
+        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Setup camera view
+        self.setup_live_camera_view(camera_frame)
         
         # Laser controls - new configurable sections
         self.setup_laser_controls(control_frame)
-        
-        # Scan mode selection - Remove radio buttons, will use separate buttons instead
         
         # DS102 Axis Configuration
         self.setup_axis_config(control_frame)
@@ -1034,13 +1045,69 @@ class OptimizerApp:
         self.status = tk.Label(control_frame, text="Ready.", font=("Arial", 12), fg="blue")
         self.status.pack(pady=10)
         
-        # Right panel for plot
-        plot_frame = tk.Frame(main_frame)
-        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        # Setup plot in the right panel
+        self.fig, self.ax = plt.subplots(figsize=(6, 5))  # Smaller to fit new layout
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    
+    def setup_live_camera_view(self, parent):
+        """Setup built-in live camera view panel"""
+        # Camera view header
+        camera_header = tk.Frame(parent, bg='black')
+        camera_header.pack(fill=tk.X, pady=5, padx=5)
+        
+        tk.Label(camera_header, text="Live Camera View", 
+                font=("Arial", 14, "bold"), fg="white", bg="black").pack(side=tk.LEFT)
+        
+        # Camera status indicator
+        self.live_camera_status = tk.Label(camera_header, text="●", 
+                                         font=("Arial", 12), fg="red", bg="black")
+        self.live_camera_status.pack(side=tk.RIGHT)
+        
+        # Main camera display area
+        self.camera_display_frame = tk.Frame(parent, bg='black')
+        self.camera_display_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Camera placeholder/live view
+        self.camera_display_label = tk.Label(self.camera_display_frame, 
+                                           text="PIXELINK D3010\\nLIVE CAMERA FEED\\n\\nReady for streaming\\n\\nUse controls below to activate",
+                                           font=("Arial", 12), fg="white", bg="black", 
+                                           justify=tk.CENTER)
+        self.camera_display_label.pack(expand=True)
+        
+        # Camera control strip
+        camera_controls = tk.Frame(parent, bg='darkgray')
+        camera_controls.pack(fill=tk.X, pady=2)
+        
+        # Compact camera controls
+        tk.Button(camera_controls, text="▶ Start Live", command=self.start_live_camera,
+                 font=("Arial", 9), bg="green", fg="white", width=12).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(camera_controls, text="⏸ Stop", command=self.stop_live_camera,
+                 font=("Arial", 9), bg="red", fg="white", width=8).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(camera_controls, text="📷 Capture", command=self.quick_capture,
+                 font=("Arial", 9), bg="blue", fg="white", width=10).pack(side=tk.LEFT, padx=2, pady=2)
+        
+        # Settings strip
+        settings_frame = tk.Frame(parent, bg='lightgray')
+        settings_frame.pack(fill=tk.X, pady=2)
+        
+        # Exposure control
+        tk.Label(settings_frame, text="Exp:", font=("Arial", 8), bg='lightgray').pack(side=tk.LEFT, padx=2)
+        self.live_exposure_var = tk.DoubleVar(value=10.0)
+        tk.Scale(settings_frame, from_=1.0, to=50.0, orient=tk.HORIZONTAL, 
+                variable=self.live_exposure_var, command=self.update_live_exposure,
+                length=80, font=("Arial", 7)).pack(side=tk.LEFT, padx=2)
+        
+        # Gain control
+        tk.Label(settings_frame, text="Gain:", font=("Arial", 8), bg='lightgray').pack(side=tk.LEFT, padx=2)
+        self.live_gain_var = tk.DoubleVar(value=0.0)
+        tk.Scale(settings_frame, from_=0.0, to=20.0, orient=tk.HORIZONTAL,
+                variable=self.live_gain_var, command=self.update_live_gain,
+                length=80, font=("Arial", 7)).pack(side=tk.LEFT, padx=2)
+        
+        # Initialize live camera state
+        self.live_camera_active = False
+        self.live_camera_update_id = None
     
     def setup_laser_controls(self, parent):
         """Setup laser control UI sections"""
@@ -1511,6 +1578,19 @@ class OptimizerApp:
                 messagebox.showinfo("Camera", "Camera is disabled")
                 return
             
+            # Try to ensure enhanced camera is available
+            if not self.enhanced_camera:
+                try:
+                    if ENHANCED_CAMERA_AVAILABLE:
+                        from pixelink_camera_enhanced_basic import EnhancedPixelinkCamera
+                        self.enhanced_camera = EnhancedPixelinkCamera()
+                        if not self.enhanced_camera.initialize():
+                            print("[WARNING] Enhanced camera initialization failed, using basic camera")
+                            self.enhanced_camera = None
+                except Exception as e:
+                    print(f"[WARNING] Could not create enhanced camera: {e}")
+                    self.enhanced_camera = None
+            
             if self.enhanced_camera:
                 from pixelink_camera_enhanced_basic import EnhancedCameraPreviewWindow
                 
@@ -1518,11 +1598,144 @@ class OptimizerApp:
                 preview.start_preview()
                 messagebox.showinfo("Camera", "Enhanced preview window opened")
             else:
-                # Fallback to original preview
-                self.open_camera_preview()
+                # Fallback to original preview with better error handling
+                print("[INFO] Using fallback camera preview")
+                self.open_camera_preview_fallback()
                 
         except Exception as e:
             messagebox.showerror("Camera Error", f"Enhanced preview failed: {e}")
+    
+    def open_camera_preview_fallback(self):
+        """Fallback camera preview with better error handling"""
+        try:
+            # Try to create a simple camera for preview
+            if ENHANCED_CAMERA_AVAILABLE:
+                from pixelink_camera_enhanced_basic import EnhancedPixelinkCamera, EnhancedCameraPreviewWindow
+                camera = EnhancedPixelinkCamera()
+                if camera.initialize():
+                    preview = EnhancedCameraPreviewWindow(camera)
+                    preview.start_preview()
+                    messagebox.showinfo("Camera", "Fallback preview window opened")
+                    return
+            
+            # Last resort - show info message
+            messagebox.showinfo("Camera Preview", 
+                "Camera preview is not available.\\n\\n" +
+                "Possible reasons:\\n" +
+                "• Camera hardware not connected\\n" +
+                "• Camera already in use by another application\\n" +
+                "• PixeLINK SDK not properly installed\\n\\n" +
+                "Try the 'Test Capture' button instead.")
+            
+        except Exception as e:
+            messagebox.showerror("Camera Error", f"Camera preview failed: {e}")
+    
+    def start_live_camera(self):
+        """Start the built-in live camera view"""
+        try:
+            if not self.camera_enabled.get():
+                messagebox.showinfo("Camera", "Camera is disabled")
+                return
+                
+            # Ensure enhanced camera is available
+            if not self.enhanced_camera:
+                if ENHANCED_CAMERA_AVAILABLE:
+                    from pixelink_camera_enhanced_basic import EnhancedPixelinkCamera
+                    self.enhanced_camera = EnhancedPixelinkCamera()
+                    if not self.enhanced_camera.initialize():
+                        raise Exception("Camera initialization failed")
+                else:
+                    raise Exception("Enhanced camera not available")
+            
+            # Start streaming
+            if self.enhanced_camera.start_streaming():
+                self.live_camera_active = True
+                self.live_camera_status.config(fg="green")
+                self.camera_display_label.config(text="● LIVE STREAMING ●\\n\\nPixeLINK D3010\\nSerial: 318002000\\n\\nCamera Active")
+                self.update_live_camera_feed()
+                print("[CAMERA] Live camera view started")
+            else:
+                raise Exception("Failed to start camera streaming")
+                
+        except Exception as e:
+            messagebox.showerror("Live Camera Error", f"Failed to start live camera: {e}")
+            self.live_camera_status.config(fg="red")
+    
+    def stop_live_camera(self):
+        """Stop the built-in live camera view"""
+        try:
+            self.live_camera_active = False
+            if self.live_camera_update_id:
+                self.root.after_cancel(self.live_camera_update_id)
+                self.live_camera_update_id = None
+            
+            if self.enhanced_camera:
+                self.enhanced_camera.stop_streaming()
+            
+            self.live_camera_status.config(fg="red")
+            self.camera_display_label.config(text="PIXELINK D3010\\nLIVE CAMERA FEED\\n\\nReady for streaming\\n\\nUse controls below to activate")
+            print("[CAMERA] Live camera view stopped")
+            
+        except Exception as e:
+            print(f"[WARNING] Error stopping live camera: {e}")
+    
+    def update_live_camera_feed(self):
+        """Update the live camera feed display"""
+        if self.live_camera_active and self.enhanced_camera:
+            try:
+                # Update camera status display
+                settings = self.enhanced_camera.get_camera_settings()
+                status_text = f"● LIVE STREAMING ●\\n\\nPixeLINK D3010 - Serial: 318002000\\n\\nExp: {settings['exposure_time']:.1f}ms | Gain: {settings['gain']:.1f}dB\\n\\nStreaming: {self.enhanced_camera.is_streaming}"
+                self.camera_display_label.config(text=status_text)
+                
+                # Schedule next update
+                self.live_camera_update_id = self.root.after(100, self.update_live_camera_feed)
+                
+            except Exception as e:
+                print(f"[WARNING] Live camera feed update error: {e}")
+                self.stop_live_camera()
+    
+    def quick_capture(self):
+        """Quick capture from the live camera view"""
+        try:
+            if not self.live_camera_active or not self.enhanced_camera:
+                messagebox.showinfo("Camera", "Start live camera first")
+                return
+                
+            # Get current position for measurement capture
+            try:
+                ser = serial.Serial(STAGE_PORT, BAUDRATE, timeout=1)
+                current_position = get_all_positions(ser)
+                power_reading = 88.0  # Mock reading for quick capture
+                
+                filepath, metadata = self.enhanced_camera.create_measurement_triggered_capture(
+                    current_position, power_reading, "quick_capture")
+                
+                if filepath:
+                    self.camera_display_label.config(text=f"● CAPTURED ●\\n\\n{os.path.basename(filepath)}\\n\\nLive feed continues...")
+                    self.root.after(2000, lambda: self.update_live_camera_feed() if self.live_camera_active else None)
+                
+                ser.close()
+                
+            except Exception:
+                # Fallback to simple capture
+                filepath = self.enhanced_camera.capture_image()
+                if filepath:
+                    self.camera_display_label.config(text=f"● CAPTURED ●\\n\\n{os.path.basename(filepath)}\\n\\nLive feed continues...")
+                    self.root.after(2000, lambda: self.update_live_camera_feed() if self.live_camera_active else None)
+                
+        except Exception as e:
+            messagebox.showerror("Capture Error", f"Quick capture failed: {e}")
+    
+    def update_live_exposure(self, value):
+        """Update live camera exposure"""
+        if self.enhanced_camera:
+            self.enhanced_camera.set_exposure(float(value), auto_exposure=False)
+    
+    def update_live_gain(self, value):
+        """Update live camera gain"""
+        if self.enhanced_camera:
+            self.enhanced_camera.set_gain(float(value))
     
     def export_camera_data(self):
         """Export camera measurement data"""
